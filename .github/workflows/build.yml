@@ -1,0 +1,39 @@
+name: Build App
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    # 这一行决定了分别在 Windows 和 Mac 环境下运行
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest]
+    
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9' # 建议使用 3.9 或 3.10
+
+    - name: Install dependencies
+      run: |
+        pip install pandas openpyxl pyinstaller
+        # 如果你的界面用了额外的库，也要在这里安装
+
+    - name: Build with PyInstaller
+      run: |
+        # --windowed 参数对 Mac 很重要，不显示终端窗口
+        # 将 "你的脚本名.py" 替换为你真实的文件名
+        pyinstaller --noconsole --onefile --windowed --name "DataTool" dataExcel.py
+
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: DataTool-${{ matrix.os }}
+        path: dist/
