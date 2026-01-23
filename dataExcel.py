@@ -96,11 +96,10 @@ class UniversalProcessor:
         if len(s) > 2 and s.endswith("市"): s = s[:-1]
         return s
 
-    def process_step1(self, df, date_keyword):
+    def process_step1(self, df, date_keyword, custom_total_kws_str):
         self.log("【步骤1】清洗数据、提取地市、计算标签...")
         df.columns = [str(c).replace('\ufeff', '').strip() for c in df.columns]
         
-        # 1. 分校与地市
         branch_keywords = ["通辽分校", "陕西分校", "湖北分校", "辽宁分校", "河北分校", "甘肃分校", "厦门分校", "福建分校", "山东分校", "北京分校", "安徽分校", "黑龙江分校", "吉林分校", "江苏分校", "重庆分校", "广东分校", "天津分校", "河南分校", "云南分校", "江西分校", "湖南分校", "贵州分校", "广西分校", "山西分校", "宁夏分校", "内蒙古分校", "浙江分校", "新疆分校", "青海分校", "南疆分校", "四川分校", "上海分校", "海南分校", "西藏分校", "赤峰"]
         branch_results = ["内蒙古分校", "陕西分校", "湖北分校", "辽宁分校", "河北分校", "甘肃分校", "厦门分校", "福建分校", "山东分校", "北京分校", "安徽分校", "黑龙江分校", "吉林分校", "江苏分校", "重庆分校", "广东分校", "天津分校", "河南分校", "云南分校", "江西分校", "湖南分校", "贵州分校", "广西分校", "山西分校", "宁夏分校", "内蒙古分校", "浙江分校", "新疆分校", "青海分校", "新疆分校", "四川分校", "上海分校", "海南分校", "西藏分校", "内蒙古分校"]
         df['分校'] = df['负责人所属部门'].apply(lambda x: self.excel_lookup_find(x, branch_keywords, branch_results, "总部"))
@@ -115,12 +114,10 @@ class UniversalProcessor:
             return "其它"
         df['所属类别'] = df.apply(determine_category, axis=1)
 
-        # 2. 标签计算 (修复了缺失的列)
+        # 标签
         df['公职'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["26公职","27公职","28公职","29公职"]))
         kw_shiye = ["26事业","26三支","26社区","26辅警","26书记员","26国企","25事业","25三支","25社区","25辅警","25书记员","25国企", "27事业","27三支","27社区","27辅警","27书记员","27国企","28事业","28三支","28社区","28辅警","28书记员","28国企", "29事业","29三支","29社区","29辅警","29书记员","29国企"]
         df['事业辅助列'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, kw_shiye))
-        
-        # ★★★ 补回了以下缺失的代码 ★★★
         kw_jiaoshi = ["26教师","26特岗","26教资","25教师","25特岗","25教资","27教师","27特岗","27教资","28教师","28特岗","28教资","29教师","29特岗","29教资"]
         df['教师'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, kw_jiaoshi))
         df['文职'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["25文职","26文职","27文职","28文职","29文职"]))
@@ -129,13 +126,30 @@ class UniversalProcessor:
         df['考研'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["25考研","26考研","27考研","28考研","29考研"]))
         df['学历'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["25学历","26学历","27学历","28学历","29学历"]))
         df['其他'] = ""
-        # ★★★ 补回结束 ★★★
+        
+        # 自定义标备
+        custom_kws = [k.strip() for k in custom_total_kws_str.replace('，', ',').split(',') if k.strip()]
+        if custom_kws:
+            self.log(f"⚡ 启用自定义标备逻辑，关键词: {custom_kws}")
+            def check_custom_total(remark):
+                if pd.isna(remark): return 0
+                remark_str = str(remark)
+                return 1 if any(kw in remark_str for kw in custom_kws) else 0
+            df['标备总数'] = df['备注名'].apply(check_custom_total)
+        else:
+            all_cols_check = ['公职', '事业辅助列', '教师', '文职', '医疗', '银行', '考研', '学历', '其他']
+            df['标备总数'] = df.apply(lambda row: 1 if any(row[c] in [1, "1"] for c in all_cols_check) else 0, axis=1)
 
-        all_cols_check = ['公职', '事业辅助列', '教师', '文职', '医疗', '银行', '考研', '学历', '其他']
-        df['标备总数'] = df.apply(lambda row: 1 if any(row[c] in [1, "1"] for c in all_cols_check) else 0, axis=1)
-
-        if not date_keyword: date_keyword = "FAIL_SAFE"
-        df['！！！是否新增'] = df['创建时间'].astype(str).apply(lambda x: "是" if date_keyword in x else "否")
+        # 多月份
+        date_kws = [k.strip() for k in date_keyword.replace('，', ',').split(',') if k.strip()]
+        if not date_kws: date_kws = ["FAIL_SAFE"]
+        self.log(f"📅 判断新增的日期关键词: {date_kws}")
+        
+        def check_is_new(create_time):
+            s_time = str(create_time)
+            if any(k in s_time for k in date_kws): return "是"
+            return "否"
+        df['！！！是否新增'] = df['创建时间'].apply(check_is_new)
 
         kw_ch = ["网络","社会","高校","线上","线上平台","线上活动","现场","线下活动"]
         res_ch = ["线上平台","线下活动","高校","线上平台","线上平台","线上平台","考试现场","线下活动"]
@@ -165,11 +179,9 @@ class UniversalProcessor:
         final_cols = []
         if '备注名' in df.columns: final_cols.append('备注名')
         if col_z_name: final_cols.append(col_z_name)
-        # 添加所有相关列
         final_cols.extend(['分校', '地市', '所属类别', '公职', '事业2', '教师', '文职', '医疗', '银行', '考研', '学历', '其他', '标备总数', '！！！是否新增', '渠道', '线上渠道', '客户回话', '日期'])
         df_clean = df[[c for c in final_cols if c in df.columns]].copy()
         
-        # 强制数值类型
         for col in ['公职', '事业2', '标备总数']:
             if col in df_clean.columns:
                 df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce').fillna(0)
@@ -182,7 +194,6 @@ class UniversalProcessor:
     def calc_stats(self, df_raw, df_dedup):
         raw_cnt = len(df_raw)
         dedup_cnt = len(df_dedup)
-        # 确保计算时也是数字
         for c in ['公职', '事业2', '标备总数']:
             if c in df_dedup.columns: df_dedup[c] = pd.to_numeric(df_dedup[c], errors='coerce').fillna(0)
         
@@ -203,6 +214,7 @@ class UniversalProcessor:
         rep_rate = safe_div(s["rep"], s["new_add"])
         return [int(s["raw_cnt"]), int(s["dedup_cnt"]), int(s["new_add"]), to_pct(dup_rate), int(s["gz"]), int(s["sy"]), int(other), int(s["tb"]), to_pct(tb_rate), int(s["rep"]), to_pct(rep_rate)]
 
+    # --- 生成报表 ---
     def gen_prov_long(self, df_raw, df_dedup, output_file, channel_map, strict_online):
         self.log(f"生成: {os.path.basename(output_file)}")
         groups = {"A": ["山东分校", "广东分校", "河南分校", "河北分校", "湖北分校", "吉林分校", "山西分校", "陕西分校", "安徽分校", "辽宁分校", "云南分校"], "B": ["江苏分校", "湖南分校", "贵州分校", "四川分校", "黑龙江分校", "广西分校", "新疆分校", "浙江分校", "江西分校", "福建分校", "北京分校"], "C": ["甘肃分校", "海南分校", "内蒙古分校", "宁夏分校", "青海分校", "厦门分校", "上海分校", "天津分校", "西藏分校", "重庆分校"]}
@@ -241,11 +253,17 @@ class UniversalProcessor:
                 b_dedup = df_dedup[df_dedup['分校'] == branch]
                 row = [branch]
                 for ch_title, ch_filter in channel_map:
-                    c_raw = b_raw[(b_raw['渠道'] == '线上平台') & (b_raw['线上渠道'] == ch_filter)] if (ch_filter and strict_online) else (b_raw[b_raw['渠道'] == ch_filter] if ch_filter else b_raw)
-                    if ch_title == "线上平台" and not strict_online: c_raw = b_raw[(b_raw['渠道'] == '线上平台') & (b_raw['线上渠道'] == '线上平台')]
-                    c_dedup = b_dedup[(b_dedup['渠道'] == '线上平台') & (b_dedup['线上渠道'] == ch_filter)] if (ch_filter and strict_online) else (b_dedup[b_dedup['渠道'] == ch_filter] if ch_filter else b_dedup)
-                    if ch_title == "线上平台" and not strict_online: c_dedup = b_dedup[(b_dedup['渠道'] == '线上平台') & (b_dedup['线上渠道'] == '线上平台')]
-                    if not ch_filter: c_raw = b_raw; c_dedup = b_dedup
+                    if ch_filter:
+                        # ★★★ 修复点：移除了 strict_online 为 False 时的子渠道判断
+                        if strict_online: # 线上细分
+                            c_raw = b_raw[(b_raw['渠道'] == '线上平台') & (b_raw['线上渠道'] == ch_filter)]
+                            c_dedup = b_dedup[(b_dedup['渠道'] == '线上平台') & (b_dedup['线上渠道'] == ch_filter)]
+                        else: # 渠道维度
+                            c_raw = b_raw[b_raw['渠道'] == ch_filter]
+                            c_dedup = b_dedup[b_dedup['渠道'] == ch_filter]
+                    else:
+                        c_raw = b_raw; c_dedup = b_dedup
+                    
                     stats = self.calc_stats(c_raw, c_dedup)
                     for k in stats:
                         grand_acc[ch_title][k] += stats[k]
@@ -302,10 +320,16 @@ class UniversalProcessor:
                 c_raw_base = b_raw[b_raw['地市'] == city]
                 c_dedup_base = b_dedup[b_dedup['地市'] == city]
                 for ch_title, ch_filter in channel_map:
-                    c_raw = c_raw_base[(c_raw_base['渠道'] == '线上平台') & (c_raw_base['线上渠道'] == ch_filter)] if (ch_filter and strict_online) else (c_raw_base[c_raw_base['渠道'] == ch_filter] if ch_filter else c_raw_base)
-                    if ch_title == "线上平台" and not strict_online: c_raw = c_raw_base[(c_raw_base['渠道'] == '线上平台') & (c_raw_base['线上渠道'] == '线上平台')]
-                    c_dedup = c_dedup_base[(c_dedup_base['渠道'] == '线上平台') & (c_dedup_base['线上渠道'] == ch_filter)] if (ch_filter and strict_online) else (c_dedup_base[c_dedup_base['渠道'] == ch_filter] if ch_filter else c_dedup_base)
-                    if ch_title == "线上平台" and not strict_online: c_dedup = c_dedup_base[(c_dedup_base['渠道'] == '线上平台') & (c_dedup_base['线上渠道'] == '线上平台')]
+                    if ch_filter:
+                        # ★★★ 修复点：移除了 strict_online 为 False 时的子渠道判断
+                        if strict_online:
+                            c_raw = c_raw_base[(c_raw_base['渠道'] == '线上平台') & (c_raw_base['线上渠道'] == ch_filter)]
+                            c_dedup = c_dedup_base[(c_dedup_base['渠道'] == '线上平台') & (c_dedup_base['线上渠道'] == ch_filter)]
+                        else:
+                            c_raw = c_raw_base[c_raw_base['渠道'] == ch_filter]
+                            c_dedup = c_dedup_base[c_dedup_base['渠道'] == ch_filter]
+                    else:
+                        c_raw = c_raw_base; c_dedup = c_dedup_base
                     stats = self.calc_stats(c_raw, c_dedup)
                     for k in stats: grand_acc[ch_title][k] += stats[k]
                     row.extend(self.fmt_stats(stats, False))
@@ -325,10 +349,16 @@ class UniversalProcessor:
             branch_name = row_raw['分校'].iloc[0] if not row_raw.empty else DEFAULT_BRANCH_MAP.get(city, "未知分校")
             row_data = [branch_name, city]
             for ch_title, ch_filter in channel_map:
-                c_raw = row_raw[(row_raw['渠道'] == '线上平台') & (row_raw['线上渠道'] == ch_filter)] if (ch_filter and strict_online) else (row_raw[row_raw['渠道'] == ch_filter] if ch_filter else row_raw)
-                if ch_title == "线上平台" and not strict_online: c_raw = row_raw[(row_raw['渠道'] == '线上平台') & (row_raw['线上渠道'] == '线上平台')]
-                c_dedup = row_dedup[(row_dedup['渠道'] == '线上平台') & (row_dedup['线上渠道'] == ch_filter)] if (ch_filter and strict_online) else (row_dedup[row_dedup['渠道'] == ch_filter] if ch_filter else row_dedup)
-                if ch_title == "线上平台" and not strict_online: c_dedup = row_dedup[(row_dedup['渠道'] == '线上平台') & (row_dedup['线上渠道'] == '线上平台')]
+                if ch_filter:
+                    # ★★★ 修复点：移除了 strict_online 为 False 时的子渠道判断
+                    if strict_online:
+                        c_raw = row_raw[(row_raw['渠道'] == '线上平台') & (row_raw['线上渠道'] == ch_filter)]
+                        c_dedup = row_dedup[(row_dedup['渠道'] == '线上平台') & (row_dedup['线上渠道'] == ch_filter)]
+                    else:
+                        c_raw = row_raw[row_raw['渠道'] == ch_filter]
+                        c_dedup = row_dedup[row_dedup['渠道'] == ch_filter]
+                else:
+                    c_raw = row_raw; c_dedup = row_dedup
                 stats = self.calc_stats(c_raw, c_dedup)
                 for k in stats: grand_acc[ch_title][k] += stats[k]
                 row_data.extend(self.fmt_stats(stats, False))
@@ -419,68 +449,55 @@ class UniversalProcessor:
 class App:
     def __init__(self, root):
         self.root = root
-        self.root.title("数据统计工具")
-        self.root.geometry("680x720")
-        
-        # --- 核心修改：系统自适应 ---
-        import platform
-        sys_os = platform.system() # 获取操作系统名称 ('Windows' 或 'Darwin')
-        
+        self.root.title("数据统计工具 (全能修复+美化版)")
+        self.root.geometry("680x750")
+        self.root.configure(bg="#f8f9fa")
+
         style = ttk.Style()
-        
-        if sys_os == 'Darwin': # 如果是 Mac 系统
-            style.theme_use('aqua') # 使用 Mac 原生主题
-            self.root.configure(bg="#F0F0F0") # Mac 原生背景灰
-            bg_color = "#F0F0F0"
-            font_family = ".AppleSystemUIFont" # Mac 系统默认字体
-            # Mac 下按钮颜色很难强制修改，保持原生即可，否则会很难看
-        else: # 如果是 Windows
-            style.theme_use('clam')
-            self.root.configure(bg="#f8f9fa")
-            bg_color = "#f8f9fa"
-            font_family = "Microsoft YaHei" # Windows 使用微软雅黑
-        
-        # --- 样式配置 ---
-        style.configure('TFrame', background=bg_color)
-        style.configure('TLabelframe', background=bg_color)
-        style.configure('TLabelframe.Label', font=(font_family, 10, "bold"), background=bg_color, foreground="#333")
-        style.configure('TLabel', background=bg_color, font=(font_family, 9))
-        style.configure('TCheckbutton', background=bg_color, font=(font_family, 9))
-        
-        # 按钮样式：Windows 下自定义蓝色，Mac 下保持原生
-        style.configure('TButton', font=(font_family, 10))
-        if sys_os != 'Darwin':
-            style.configure('TButton', background="#007bff", foreground="white", borderwidth=0)
-            style.map('TButton', background=[('active', '#0056b3')], foreground=[('active', 'white')])
+        style.theme_use('clam')
+        style.configure('TFrame', background="#f8f9fa")
+        style.configure('TLabelframe', background="#f8f9fa")
+        style.configure('TLabelframe.Label', font=("Microsoft YaHei", 10, "bold"), background="#f8f9fa", foreground="#333")
+        style.configure('TLabel', background="#f8f9fa", font=("Microsoft YaHei", 9))
+        style.configure('TCheckbutton', background="#f8f9fa", font=("Microsoft YaHei", 9))
+        style.configure('TButton', font=("Microsoft YaHei", 10), background="#007bff", foreground="white", borderwidth=0)
+        style.map('TButton', background=[('active', '#0056b3')], foreground=[('active', 'white')])
 
-        title_bg = "#007bff" if sys_os != 'Darwin' else "#0056b3" # Mac 标题栏颜色深一点
-        title_frame = tk.Frame(root, bg=title_bg, height=50)
+        title_frame = tk.Frame(root, bg="#007bff", height=50)
         title_frame.pack(fill="x")
-        tk.Label(title_frame, text="🚀 数据自动化统计工具", font=(font_family, 14, "bold"), bg=title_bg, fg="white").pack(pady=10)
+        tk.Label(title_frame, text="🚀 数据自动化统计工具", font=("Microsoft YaHei", 14, "bold"), bg="#007bff", fg="white").pack(pady=10)
 
-        main_frame = tk.Frame(root, bg=bg_color)
+        main_frame = tk.Frame(root, bg="#f8f9fa")
         main_frame.pack(fill="both", expand=True, padx=20, pady=10)
 
-        # 1. 文件选择
         step1_frame = ttk.LabelFrame(main_frame, text=" 步骤 1：数据源 ")
         step1_frame.pack(fill="x", pady=5, ipady=5)
         self.ent_f = ttk.Entry(step1_frame)
         self.ent_f.pack(side="left", fill="x", expand=True, padx=(10, 5), pady=5)
         ttk.Button(step1_frame, text="📂 浏览文件", command=self.browse, width=12).pack(side="right", padx=10, pady=5)
 
-        # 2. 参数设置
         step2_frame = ttk.LabelFrame(main_frame, text=" 步骤 2：参数设置 ")
         step2_frame.pack(fill="x", pady=10, ipady=5)
         f_p1 = ttk.Frame(step2_frame)
         f_p1.pack(fill="x", padx=10, pady=5)
-        ttk.Label(f_p1, text="📅 判断月份 (如 2026-01):").pack(side="left")
-        self.ent_m = ttk.Entry(f_p1, width=15); self.ent_m.insert(0, "2026-01"); self.ent_m.pack(side="left", padx=10)
+        ttk.Label(f_p1, text="📅 判断月份 (如 2026-01,2026-02):").pack(side="left")
+        self.ent_m = ttk.Entry(f_p1, width=25)
+        self.ent_m.insert(0, "2026-01")
+        self.ent_m.pack(side="left", padx=10)
+
         f_p2 = ttk.Frame(step2_frame)
         f_p2.pack(fill="x", padx=10, pady=5)
         ttk.Label(f_p2, text="📆 特定日期 (如 1月1日,1月2日):").pack(side="left")
-        self.ent_d = ttk.Entry(f_p2); self.ent_d.pack(side="left", fill="x", expand=True, padx=10)
+        self.ent_d = ttk.Entry(f_p2)
+        self.ent_d.pack(side="left", fill="x", expand=True, padx=10)
 
-        # 3. 报表选择
+        f_p3 = ttk.Frame(step2_frame)
+        f_p3.pack(fill="x", padx=10, pady=5)
+        ttk.Label(f_p3, text="🔍 自定义标备词 (选填,逗号隔开):").pack(side="left")
+        self.ent_ckw = ttk.Entry(f_p3)
+        self.ent_ckw.pack(side="left", fill="x", expand=True, padx=10)
+        ttk.Label(f_p3, text="(填了则覆盖默认逻辑)", foreground="gray").pack(side="right")
+
         step3_frame = ttk.LabelFrame(main_frame, text=" 步骤 3：选择任务 ")
         step3_frame.pack(fill="x", pady=5, ipady=5)
         self.v_pl = tk.BooleanVar(value=False)
@@ -499,16 +516,12 @@ class App:
         sep.grid(row=2, column=0, columnspan=2, sticky="ew", pady=8)
         ttk.Checkbutton(grid_frame, text="★ 单独地市 (固定24地市列表)", variable=self.v_special, style='TCheckbutton').grid(row=3, column=0, columnspan=2, sticky="w", padx=10)
 
-        # 4. 运行按钮
         self.btn = ttk.Button(main_frame, text="▶ 开始处理", command=self.run)
         self.btn.pack(pady=15, ipady=5, ipadx=20)
 
-        # 5. 日志
         log_frame = ttk.LabelFrame(main_frame, text=" 运行日志 ")
         log_frame.pack(fill="both", expand=True, pady=5)
-        # Windows 上 Consolas 很好看，Mac 上用 Menlo 或 Monaco
-        log_font = ("Consolas", 9) if sys_os != 'Darwin' else ("Menlo", 11)
-        self.log_txt = scrolledtext.ScrolledText(log_frame, height=8, font=log_font, bg="#f4f4f4", relief="flat")
+        self.log_txt = scrolledtext.ScrolledText(log_frame, height=8, font=("Consolas", 9), bg="#f4f4f4", relief="flat")
         self.log_txt.pack(fill="both", expand=True, padx=5, pady=5)
 
     def log(self, msg):
@@ -543,7 +556,8 @@ class App:
             if not dfs: raise ValueError("未读取到有效数据")
             full_df = pd.concat(dfs, ignore_index=True)
             
-            df_clean, df_dp, df_dc = proc.process_step1(full_df, self.ent_m.get())
+            df_clean, df_dp, df_dc = proc.process_step1(full_df, self.ent_m.get(), self.ent_ckw.get())
+            
             base_dir = os.path.dirname(files[0])
             base_name = os.path.splitext(os.path.basename(files[0]))[0]
             
