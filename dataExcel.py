@@ -449,7 +449,7 @@ class UniversalProcessor:
 class App:
     def __init__(self, root):
         self.root = root
-        self.root.title("数据统计工具 (全能修复+美化版)")
+        self.root.title("数据统计工具2.0")
         self.root.geometry("680x750")
         self.root.configure(bg="#f8f9fa")
 
