@@ -114,17 +114,17 @@ class UniversalProcessor:
             return "其它"
         df['所属类别'] = df.apply(determine_category, axis=1)
 
-        # 标签
+        # 标签 (您已修改为30年份)
         df['公职'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["26公职","27公职","28公职","29公职"]))
-        kw_shiye = ["26事业","26三支","26社区","26辅警","26书记员","26国企","25事业","25三支","25社区","25辅警","25书记员","25国企", "27事业","27三支","27社区","27辅警","27书记员","27国企","28事业","28三支","28社区","28辅警","28书记员","28国企", "29事业","29三支","29社区","29辅警","29书记员","29国企"]
+        kw_shiye = ["26事业","26三支","26社区","26辅警","26书记员","26国企","30事业","30三支","30社区","30辅警","30书记员","30国企", "27事业","27三支","27社区","27辅警","27书记员","27国企","28事业","28三支","28社区","28辅警","28书记员","28国企", "29事业","29三支","29社区","29辅警","29书记员","29国企"]
         df['事业辅助列'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, kw_shiye))
-        kw_jiaoshi = ["26教师","26特岗","26教资","25教师","25特岗","25教资","27教师","27特岗","27教资","28教师","28特岗","28教资","29教师","29特岗","29教资"]
+        kw_jiaoshi = ["26教师","26特岗","26教资","30教师","30特岗","30教资","27教师","27特岗","27教资","28教师","28特岗","28教资","29教师","29特岗","29教资"]
         df['教师'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, kw_jiaoshi))
-        df['文职'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["25文职","26文职","27文职","28文职","29文职"]))
-        df['医疗'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["25医疗","26医疗","27医疗","28医疗","29医疗"]))
-        df['银行'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["25银行","26银行","27银行","28银行","29银行"]))
-        df['考研'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["25考研","26考研","27考研","28考研","29考研"]))
-        df['学历'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["25学历","26学历","27学历","28学历","29学历"]))
+        df['文职'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["30文职","26文职","27文职","28文职","29文职"]))
+        df['医疗'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["30医疗","26医疗","27医疗","28医疗","29医疗"]))
+        df['银行'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["30银行","26银行","27银行","28银行","29银行"]))
+        df['考研'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["30考研","26考研","27考研","28考研","29考研"]))
+        df['学历'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["30学历","26学历","27学历","28学历","29学历"]))
         df['其他'] = ""
         
         # 自定义标备
@@ -143,7 +143,6 @@ class UniversalProcessor:
         # 多月份
         date_kws = [k.strip() for k in date_keyword.replace('，', ',').split(',') if k.strip()]
         if not date_kws: date_kws = ["FAIL_SAFE"]
-        self.log(f"📅 判断新增的日期关键词: {date_kws}")
         
         def check_is_new(create_time):
             s_time = str(create_time)
@@ -175,22 +174,41 @@ class UniversalProcessor:
             except: return str(val)
         df['日期'] = df['好友添加时间'].apply(fmt_date)
 
+        # 检查是否有 "添加好友状态" 列
+        has_status_col = '添加好友状态' in df.columns
+        if not has_status_col:
+            self.log("⚠️ 警告：源数据缺少 '添加好友状态' 列，留存版报表将无法正确生成！")
+
         col_z_name = df.columns[25] if len(df.columns) > 25 else None
-        final_cols = []
-        if '备注名' in df.columns: final_cols.append('备注名')
-        if col_z_name: final_cols.append(col_z_name)
-        final_cols.extend(['分校', '地市', '所属类别', '公职', '事业2', '教师', '文职', '医疗', '银行', '考研', '学历', '其他', '标备总数', '！！！是否新增', '渠道', '线上渠道', '客户回话', '日期'])
+        
+        # 基础列
+        final_cols = ['分校', '地市', '所属类别', '公职', '事业2', '教师', '文职', '医疗', '银行', '考研', '学历', '其他', '标备总数', '！！！是否新增', '渠道', '线上渠道', '客户回话', '日期']
+        if '备注名' in df.columns: final_cols.insert(0, '备注名')
+        if col_z_name: final_cols.insert(1, col_z_name)
+        if has_status_col: final_cols.append('添加好友状态')
+
         df_clean = df[[c for c in final_cols if c in df.columns]].copy()
         
+        # 强转数值
         for col in ['公职', '事业2', '标备总数']:
             if col in df_clean.columns:
                 df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce').fillna(0)
 
+        # 1. 传统去重版 (带新增判断)
         df_dedup_prov = df_clean.drop_duplicates(subset=[col_z_name, '分校'], keep='first') if col_z_name else df_clean.copy()
         df_dedup_city = df_clean.drop_duplicates(subset=[col_z_name, '分校', '地市'], keep='first') if col_z_name else df_clean.copy()
         
-        return df_clean, df_dedup_prov, df_dedup_city
+        # 2. 留存版 (不去重，不看时间，只看状态=已添加)
+        if has_status_col:
+            unique_status = df_clean['添加好友状态'].dropna().unique()
+            df_retention = df_clean[df_clean['添加好友状态'].astype(str).str.contains("已添加", na=False)].copy()
+            self.log(f"留存版筛选结果：符合'已添加'的共有 {len(df_retention)} 行")
+        else:
+            df_retention = pd.DataFrame()
 
+        return df_clean, df_dedup_prov, df_dedup_city, df_retention
+
+    # --- 统计函数 ---
     def calc_stats(self, df_raw, df_dedup):
         raw_cnt = len(df_raw)
         dedup_cnt = len(df_dedup)
@@ -214,35 +232,51 @@ class UniversalProcessor:
         rep_rate = safe_div(s["rep"], s["new_add"])
         return [int(s["raw_cnt"]), int(s["dedup_cnt"]), int(s["new_add"]), to_pct(dup_rate), int(s["gz"]), int(s["sy"]), int(other), int(s["tb"]), to_pct(tb_rate), int(s["rep"]), to_pct(rep_rate)]
 
-    # --- ★★★ 全新合并版 一维数据生成器 (省份) ★★★ ---
+    def calc_stats_retention(self, df_subset):
+        retention_count = len(df_subset)
+        if retention_count == 0:
+            return {"gz":0, "sy":0, "tb":0, "ret":0}
+        
+        gz = df_subset['公职'].sum()
+        sy = df_subset['事业2'].sum()
+        tb = df_subset['标备总数'].sum()
+        
+        return {"gz": gz, "sy": sy, "tb": tb, "ret": retention_count}
+
+    def fmt_stats_retention(self, s, is_province_mode=False):
+        def safe_div(a, b): return a / b if b != 0 else 0.0
+        def to_pct(v): return f"{v:.2%}" if is_province_mode else f"{int(round(v*100))}%"
+        
+        other = s["tb"] - s["gz"] - s["sy"]
+        tb_rate = safe_div(s["tb"], s["ret"])
+        
+        # ★★★ 修改点：留存量移到最前面 ★★★
+        return [
+            int(s["ret"]), # 留存量
+            int(s["gz"]), 
+            int(s["sy"]), 
+            int(other), 
+            int(s["tb"]), 
+            to_pct(tb_rate)
+        ]
+
+    # ... (报表生成函数 gen_prov_long_merged, gen_prov_wide 等) ...
     def gen_prov_long_merged(self, df_raw, df_dedup, output_file):
         self.log(f"生成 [省份-一维]: {os.path.basename(output_file)}")
         groups = {"A": ["山东分校", "广东分校", "河南分校", "河北分校", "湖北分校", "吉林分校", "山西分校", "陕西分校", "安徽分校", "辽宁分校", "云南分校"], "B": ["江苏分校", "湖南分校", "贵州分校", "四川分校", "黑龙江分校", "广西分校", "新疆分校", "浙江分校", "江西分校", "福建分校", "北京分校"], "C": ["甘肃分校", "海南分校", "内蒙古分校", "宁夏分校", "青海分校", "厦门分校", "上海分校", "天津分校", "西藏分校", "重庆分校"]}
         sub_headers = ["新增好友", "本月分校内去重", "净新增", "重复率", "公职标备", "事业标备", "其他标备", "标备总量", "标备率", "回话备注", "回话备注率"]
-        
-        # ★★★ 修改点：删除了“微信好友总量” ★★★
         iter_list = [
-            ("线上平台", "网站", "网站"),
-            ("线上平台", "小红书", "小红书"),
-            ("线上平台", "公众号", "公众号"),
-            ("线上平台", "抖音", "抖音"),
-            ("线上平台", "视频号", "视频号"),
-            ("线上平台", "其他", "其他"),
-            ("线下活动", "线下活动", "线下活动"),
-            ("考试现场", "考试现场", "考试现场"),
-            ("高校", "高校", "高校"),
-            ("其他", "其他", "其他")
+            ("线上平台", "网站", "网站"), ("线上平台", "小红书", "小红书"), ("线上平台", "公众号", "公众号"),
+            ("线上平台", "抖音", "抖音"), ("线上平台", "视频号", "视频号"), ("线上平台", "其他", "其他"),
+            ("线下活动", "线下活动", "线下活动"), ("考试现场", "考试现场", "考试现场"), ("高校", "高校", "高校"), ("其他", "其他", "其他")
         ]
-
         final_rows = []
         grand_acc = {key: {"raw_cnt":0, "dedup_cnt":0,"new_add":0,"gz":0,"sy":0,"tb":0,"rep":0} for key in [x[2] for x in iter_list]}
         group_acc = {g: {key: {"raw_cnt":0, "dedup_cnt":0,"new_add":0,"gz":0,"sy":0,"tb":0,"rep":0} for key in [x[2] for x in iter_list]} for g in groups}
-
         for g_name, branches in groups.items():
             for branch in branches:
                 b_raw = df_raw[df_raw['分校'] == branch]
                 b_dedup = df_dedup[df_dedup['分校'] == branch]
-                
                 for platform_name, filter_kw, specific_name in iter_list:
                     if platform_name == "线上平台":
                         c_raw = b_raw[(b_raw['渠道'] == '线上平台') & (b_raw['线上渠道'] == filter_kw)]
@@ -250,21 +284,15 @@ class UniversalProcessor:
                     else:
                         c_raw = b_raw[b_raw['渠道'] == filter_kw]
                         c_dedup = b_dedup[b_dedup['渠道'] == filter_kw]
-
                     stats = self.calc_stats(c_raw, c_dedup)
-                    
                     for k in stats:
                         group_acc[g_name][specific_name][k] += stats[k]
                         grand_acc[specific_name][k] += stats[k]
-                    
                     final_rows.append([branch, platform_name, specific_name] + self.fmt_stats(stats, True))
-
             for platform_name, filter_kw, specific_name in iter_list:
                 final_rows.append([f"{g_name}类总计", platform_name, specific_name] + self.fmt_stats(group_acc[g_name][specific_name], True))
-
         for platform_name, filter_kw, specific_name in iter_list:
             final_rows.append(["全国", platform_name, specific_name] + self.fmt_stats(grand_acc[specific_name], True))
-
         pd.DataFrame(final_rows, columns=["分校", "所属平台", "所属渠道"]+sub_headers).to_excel(output_file, index=False)
         self._style_excel(output_file)
 
@@ -307,28 +335,16 @@ class UniversalProcessor:
         final_rows.append(n_row)
         self._write_wide_excel(output_file, final_rows, channel_map, 2, False)
 
-    # --- ★★★ 全新合并版 一维数据生成器 (地市) ★★★ ---
     def gen_city_long_merged(self, df_raw, df_dedup, output_file):
         self.log(f"生成 [地市-一维]: {os.path.basename(output_file)}")
         sub_headers = ["新增好友", "本月分校内去重", "净新增", "重复率", "公职标备", "事业标备", "其他标备", "标备总量", "标备率", "回话备注", "回话备注率"]
-        
-        # ★★★ 修改点：删除了“微信好友总量” ★★★
         iter_list = [
-            ("线上平台", "网站", "网站"),
-            ("线上平台", "小红书", "小红书"),
-            ("线上平台", "公众号", "公众号"),
-            ("线上平台", "抖音", "抖音"),
-            ("线上平台", "视频号", "视频号"),
-            ("线上平台", "其他", "其他"),
-            ("线下活动", "线下活动", "线下活动"),
-            ("考试现场", "考试现场", "考试现场"),
-            ("高校", "高校", "高校"),
-            ("其他", "其他", "其他")
+            ("线上平台", "网站", "网站"), ("线上平台", "小红书", "小红书"), ("线上平台", "公众号", "公众号"),
+            ("线上平台", "抖音", "抖音"), ("线上平台", "视频号", "视频号"), ("线上平台", "其他", "其他"),
+            ("线下活动", "线下活动", "线下活动"), ("考试现场", "考试现场", "考试现场"), ("高校", "高校", "高校"), ("其他", "其他", "其他")
         ]
-
         final_rows = []
         grand_acc = {key: {"raw_cnt":0, "dedup_cnt":0,"new_add":0,"gz":0,"sy":0,"tb":0,"rep":0} for key in [x[2] for x in iter_list]}
-
         branches = sorted(df_raw['分校'].dropna().unique())
         for branch in branches:
             b_raw = df_raw[df_raw['分校'] == branch]
@@ -338,7 +354,6 @@ class UniversalProcessor:
                 c_raw_base = b_raw[b_raw['地市'] == city]
                 c_dedup_base = b_dedup[b_dedup['地市'] == city]
                 cat = c_raw_base['所属类别'].iloc[0] if not c_raw_base.empty else "其它"
-                
                 for platform_name, filter_kw, specific_name in iter_list:
                     if platform_name == "线上平台":
                         c_raw = c_raw_base[(c_raw_base['渠道'] == '线上平台') & (c_raw_base['线上渠道'] == filter_kw)]
@@ -346,15 +361,11 @@ class UniversalProcessor:
                     else:
                         c_raw = c_raw_base[c_raw_base['渠道'] == filter_kw]
                         c_dedup = c_dedup_base[c_dedup_base['渠道'] == filter_kw]
-                    
                     stats = self.calc_stats(c_raw, c_dedup)
                     for k in stats: grand_acc[specific_name][k] += stats[k]
-                    
                     final_rows.append([branch, city, cat, platform_name, specific_name] + self.fmt_stats(stats, False))
-
         for platform_name, filter_kw, specific_name in iter_list:
             final_rows.append(["全国", "总计", "-", platform_name, specific_name] + self.fmt_stats(grand_acc[specific_name], False))
-
         pd.DataFrame(final_rows, columns=["分校", "地市", "所属类别", "所属平台", "所属渠道"]+sub_headers).to_excel(output_file, index=False)
         self._style_excel(output_file)
 
@@ -424,6 +435,132 @@ class UniversalProcessor:
         final_rows.append(n_row)
         self._write_wide_excel(output_file, final_rows, channel_map, 3, True)
 
+    # --- 留存版生成器 (宽表) ---
+    def gen_wide_retention(self, df_ret, output_file, channel_map, strict_online, is_province_mode, is_special_mode):
+        self.log(f"生成 [留存版-宽表]: {os.path.basename(output_file)}")
+        groups = {"A": ["山东分校", "广东分校", "河南分校", "河北分校", "湖北分校", "吉林分校", "山西分校", "陕西分校", "安徽分校", "辽宁分校", "云南分校"], "B": ["江苏分校", "湖南分校", "贵州分校", "四川分校", "黑龙江分校", "广西分校", "新疆分校", "浙江分校", "江西分校", "福建分校", "北京分校"], "C": ["甘肃分校", "海南分校", "内蒙古分校", "宁夏分校", "青海分校", "厦门分校", "上海分校", "天津分校", "西藏分校", "重庆分校"]}
+        final_rows = []
+        grand_acc = {ch[0]: {"gz":0,"sy":0,"tb":0,"ret":0} for ch in channel_map}
+        group_acc = {g: {ch[0]: {"gz":0,"sy":0,"tb":0,"ret":0} for ch in channel_map} for g in groups}
+
+        if is_special_mode:
+            for city in FIXED_ORDER_CITIES:
+                row_ret = df_ret[df_ret['地市'] == city]
+                branch_name = row_ret['分校'].iloc[0] if not row_ret.empty else DEFAULT_BRANCH_MAP.get(city, "未知分校")
+                row_data = [branch_name, city]
+                for ch_title, ch_filter in channel_map:
+                    # 筛选
+                    if ch_filter:
+                        if strict_online:
+                            c_ret = row_ret[(row_ret['渠道'] == '线上平台') & (row_ret['线上渠道'] == ch_filter)]
+                        else:
+                            c_ret = row_ret[row_ret['渠道'] == ch_filter]
+                            if ch_title == "线上平台": c_ret = row_ret[row_ret['渠道'] == '线上平台']
+                    else:
+                        c_ret = row_ret
+                    stats = self.calc_stats_retention(c_ret)
+                    for k in stats: grand_acc[ch_title][k] += stats[k]
+                    row_data.extend(self.fmt_stats_retention(stats, False))
+                final_rows.append(row_data)
+        
+        elif is_province_mode:
+            for g_name, branches in groups.items():
+                for branch in branches:
+                    b_ret = df_ret[df_ret['分校'] == branch]
+                    row_data = [branch]
+                    for ch_title, ch_filter in channel_map:
+                        if ch_filter:
+                            if strict_online:
+                                c_ret = b_ret[(b_ret['渠道'] == '线上平台') & (b_ret['线上渠道'] == ch_filter)]
+                            else:
+                                c_ret = b_ret[b_ret['渠道'] == ch_filter]
+                                if ch_title == "线上平台": c_ret = b_ret[b_ret['渠道'] == '线上平台']
+                        else:
+                            c_ret = b_ret
+                        stats = self.calc_stats_retention(c_ret)
+                        for k in stats:
+                            grand_acc[ch_title][k] += stats[k]
+                            group_acc[g_name][ch_title][k] += stats[k]
+                        row_data.extend(self.fmt_stats_retention(stats, True))
+                    final_rows.append(row_data)
+                g_row = [f"{g_name}类总计"]
+                for ch_title, _ in channel_map: g_row.extend(self.fmt_stats_retention(group_acc[g_name][ch_title], True))
+                final_rows.append(g_row)
+
+        else:
+            branches = sorted(df_ret['分校'].dropna().unique())
+            for branch in branches:
+                b_ret = df_ret[df_ret['分校'] == branch]
+                cities = sorted(b_ret['地市'].dropna().unique())
+                for city in cities:
+                    c_ret_base = b_ret[b_ret['地市'] == city]
+                    row_data = [branch, city]
+                    for ch_title, ch_filter in channel_map:
+                        if ch_filter:
+                            if strict_online:
+                                c_ret = c_ret_base[(c_ret_base['渠道'] == '线上平台') & (c_ret_base['线上渠道'] == ch_filter)]
+                            else:
+                                c_ret = c_ret_base[c_ret_base['渠道'] == ch_filter]
+                                if ch_title == "线上平台": c_ret = c_ret_base[c_ret_base['渠道'] == '线上平台']
+                        else:
+                            c_ret = c_ret_base
+                        stats = self.calc_stats_retention(c_ret)
+                        for k in stats: grand_acc[ch_title][k] += stats[k]
+                        row_data.extend(self.fmt_stats_retention(stats, False))
+                    final_rows.append(row_data)
+
+        n_row = ["全国", "总计"] if not is_province_mode else ["全国"]
+        for ch_title, _ in channel_map: n_row.extend(self.fmt_stats_retention(grand_acc[ch_title], is_province_mode))
+        final_rows.append(n_row)
+
+        self._write_wide_excel_retention(output_file, final_rows, channel_map, 2 if is_province_mode else 3, not is_province_mode)
+
+    # --- 留存版生成器 (地市一维汇总) ---
+    def gen_city_long_retention_merged(self, df_ret, output_file):
+        self.log(f"生成 [地市-一维-留存版]: {os.path.basename(output_file)}")
+        # ★★★ 修改点：列顺序调整 ★★★
+        sub_headers = ["留存量", "公职标备", "事业标备", "其他标备", "标备总量", "标备率", "总-留存量", "总-公职标备", "总-事业标备", "总-其他标备", "总-标备总量"]
+        iter_list = [
+            ("线上平台", "网站", "网站"), ("线上平台", "小红书", "小红书"), ("线上平台", "公众号", "公众号"),
+            ("线上平台", "抖音", "抖音"), ("线上平台", "视频号", "视频号"), ("线上平台", "其他", "其他"),
+            ("线下活动", "线下活动", "线下活动"), ("考试现场", "考试现场", "考试现场"), ("高校", "高校", "高校"), ("其他", "其他", "其他")
+        ]
+        final_rows = []
+        grand_acc = {key: {"gz":0,"sy":0,"tb":0,"ret":0} for key in [x[2] for x in iter_list]}
+        branches = sorted(df_ret['分校'].dropna().unique())
+        for branch in branches:
+            b_ret = df_ret[df_ret['分校'] == branch]
+            cities = sorted(b_ret['地市'].dropna().unique())
+            for city in cities:
+                c_ret_base = b_ret[b_ret['地市'] == city]
+                cat = c_ret_base['所属类别'].iloc[0] if not c_ret_base.empty else "其它"
+                city_total_stats = self.calc_stats_retention(c_ret_base)
+                city_other = city_total_stats["tb"] - city_total_stats["gz"] - city_total_stats["sy"]
+                
+                # ★★★ 修改点：汇总列顺序调整 ★★★
+                city_total_cols = [
+                    int(city_total_stats["ret"]),
+                    int(city_total_stats["gz"]),
+                    int(city_total_stats["sy"]),
+                    int(city_other),
+                    int(city_total_stats["tb"])
+                ]
+
+                for platform_name, filter_kw, specific_name in iter_list:
+                    if platform_name == "线上平台":
+                        c_ret = c_ret_base[(c_ret_base['渠道'] == '线上平台') & (c_ret_base['线上渠道'] == filter_kw)]
+                    else:
+                        c_ret = c_ret_base[c_ret_base['渠道'] == filter_kw]
+                    stats = self.calc_stats_retention(c_ret)
+                    for k in stats: grand_acc[specific_name][k] += stats[k]
+                    row = [branch, city, cat, platform_name, specific_name] + self.fmt_stats_retention(stats, False) + city_total_cols
+                    final_rows.append(row)
+        for platform_name, filter_kw, specific_name in iter_list:
+            row = ["全国", "总计", "-", platform_name, specific_name] + self.fmt_stats_retention(grand_acc[specific_name], False) + ["-"]*5
+            final_rows.append(row)
+        pd.DataFrame(final_rows, columns=["分校", "地市", "所属类别", "所属平台", "所属渠道"]+sub_headers).to_excel(output_file, index=False)
+        self._style_excel(output_file)
+
     def gen_date_summary(self, df_dedup, target_dates_str, output_file, is_city_level=True):
         if not target_dates_str.strip(): return
         self.log(f"生成日期汇总: {os.path.basename(output_file)}")
@@ -476,6 +613,35 @@ class UniversalProcessor:
                         start_r = r
             self._style_excel_ws(ws)
 
+    def _write_wide_excel_retention(self, output_file, rows, channel_map, start_col_idx, has_city_col):
+        # ★★★ 修改点：列顺序调整 ★★★
+        sub_headers = ["留存量", "公职标备", "事业标备", "其他标备", "标备总量", "标备率"]
+        df_out = pd.DataFrame(rows)
+        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+            df_out.to_excel(writer, index=False, header=False, startrow=2)
+            ws = writer.sheets['Sheet1']
+            ws['A1'] = "分校"; ws.merge_cells('A1:A2')
+            if has_city_col: ws['B1'] = "地市"; ws.merge_cells('B1:B2')
+            curr_col = start_col_idx
+            for ch_title, _ in channel_map:
+                ws.cell(row=1, column=curr_col).value = ch_title
+                for sub in sub_headers:
+                    ws.cell(row=2, column=curr_col).value = sub
+                    curr_col += 1
+                ws.merge_cells(start_row=1, start_column=curr_col-len(sub_headers), end_row=1, end_column=curr_col-1)
+            
+            if has_city_col:
+                max_r = ws.max_row
+                curr_b = ws['A3'].value
+                start_r = 3
+                for r in range(4, max_r + 2):
+                    val = ws[f'A{r}'].value if r <= max_r else None
+                    if val != curr_b:
+                        if start_r < r - 1: ws.merge_cells(f'A{start_r}:A{r-1}')
+                        curr_b = val
+                        start_r = r
+            self._style_excel_ws(ws)
+
     def _style_excel(self, file_path):
         try:
             wb = load_workbook(file_path)
@@ -505,8 +671,8 @@ class UniversalProcessor:
 class App:
     def __init__(self, root):
         self.root = root
-        self.root.title("数据统计工具 (2.2合并一维数据)")
-        self.root.geometry("680x750")
+        self.root.title("数据统计工具3.0")
+        self.root.geometry("680x800")
         self.root.configure(bg="#f8f9fa")
 
         style = ttk.Style()
@@ -556,11 +722,16 @@ class App:
 
         step3_frame = ttk.LabelFrame(main_frame, text=" 步骤 3：选择任务 ")
         step3_frame.pack(fill="x", pady=5, ipady=5)
+        
+        self.v_retention = tk.BooleanVar(value=False)
         self.v_pl = tk.BooleanVar(value=False)
         self.v_pw = tk.BooleanVar(value=False)
         self.v_cl = tk.BooleanVar(value=False)
         self.v_cw = tk.BooleanVar(value=False)
         self.v_special = tk.BooleanVar(value=False)
+
+        chk_ret = ttk.Checkbutton(step3_frame, text="🔥 同时生成“留存版”报表", variable=self.v_retention, style='TCheckbutton')
+        chk_ret.pack(anchor="w", padx=15, pady=5)
 
         grid_frame = ttk.Frame(step3_frame)
         grid_frame.pack(fill="x", padx=15, pady=5)
@@ -612,7 +783,7 @@ class App:
             if not dfs: raise ValueError("未读取到有效数据")
             full_df = pd.concat(dfs, ignore_index=True)
             
-            df_clean, df_dp, df_dc = proc.process_step1(full_df, self.ent_m.get(), self.ent_ckw.get())
+            df_clean, df_dp, df_dc, df_ret = proc.process_step1(full_df, self.ent_m.get(), self.ent_ckw.get())
             
             base_dir = os.path.dirname(files[0])
             base_name = os.path.splitext(os.path.basename(files[0]))[0]
@@ -620,9 +791,14 @@ class App:
             df_dc.to_excel(os.path.join(base_dir, f"{base_name}_00_清洗后源数据.xlsx"), index=False)
             self.log("✅ 源数据已保存")
 
-            # ★★★ 关键：在这里恢复宽表（合并数据）需要的包含“微信好友总量”的映射表 ★★★
             m_ch = [("微信好友总量", None), ("线上平台", "线上平台"), ("线下平台", "线下活动"), ("考试现场", "考试现场"), ("高校", "高校"), ("其他", "其他")]
             m_on = [("微信好友总量", None), ("网站", "网站"), ("小红书", "小红书"), ("公众号", "公众号"), ("抖音", "抖音"), ("视频号", "视频号"), ("其他", "其他")]
+            
+            # ★★★ 修改点：留存版现在包含微信好友总量 ★★★
+            m_ch_ret = [("微信好友总量", None), ("线上平台", "线上平台"), ("线下平台", "线下活动"), ("考试现场", "考试现场"), ("高校", "高校"), ("其他", "其他")]
+            m_on_ret = [("微信好友总量", None), ("网站", "网站"), ("小红书", "小红书"), ("公众号", "公众号"), ("抖音", "抖音"), ("视频号", "视频号"), ("其他", "其他")]
+
+            do_retention = self.v_retention.get() and not df_ret.empty
 
             if self.v_pl.get():
                 proc.gen_prov_long_merged(df_clean, df_dp, os.path.join(base_dir, f"{base_name}_01_省份一维_合并报表.xlsx"))
@@ -632,24 +808,35 @@ class App:
                 proc.gen_prov_wide(df_clean, df_dp, os.path.join(base_dir, f"{base_name}_02_省份合并_渠道.xlsx"), m_ch, False)
                 proc.gen_prov_wide(df_clean, df_dp, os.path.join(base_dir, f"{base_name}_03_省份合并_线上.xlsx"), m_on, True)
                 self.log("✅ 省份宽表已生成")
+                if do_retention:
+                    proc.gen_wide_retention(df_ret, os.path.join(base_dir, f"{base_name}_02_省份合并_渠道_留存版.xlsx"), m_ch_ret, False, True, False)
+                    proc.gen_wide_retention(df_ret, os.path.join(base_dir, f"{base_name}_03_省份合并_线上_留存版.xlsx"), m_on_ret, True, True, False)
+                    self.log("✅ 省份宽表[留存版] 已生成")
 
             if self.v_cl.get():
                 proc.gen_city_long_merged(df_clean, df_dc, os.path.join(base_dir, f"{base_name}_04_地市一维_合并报表.xlsx"))
                 self.log("✅ 地市一维表(合并版)已生成")
+                if do_retention:
+                    proc.gen_city_long_retention_merged(df_ret, os.path.join(base_dir, f"{base_name}_04_地市一维_留存版.xlsx"))
+                    self.log("✅ 地市一维表[留存版] 已生成")
 
             if self.v_cw.get():
                 proc.gen_city_wide(df_clean, df_dc, os.path.join(base_dir, f"{base_name}_05_地市合并_渠道.xlsx"), m_ch, False)
                 proc.gen_city_wide(df_clean, df_dc, os.path.join(base_dir, f"{base_name}_06_地市合并_线上.xlsx"), m_on, True)
                 self.log("✅ 地市宽表已生成")
+                if do_retention:
+                    proc.gen_wide_retention(df_ret, os.path.join(base_dir, f"{base_name}_05_地市合并_渠道_留存版.xlsx"), m_ch_ret, False, False, False)
+                    proc.gen_wide_retention(df_ret, os.path.join(base_dir, f"{base_name}_06_地市合并_线上_留存版.xlsx"), m_on_ret, True, False, False)
+                    self.log("✅ 地市宽表[留存版] 已生成")
 
             if self.v_special.get():
-                # 单独地市宽表逻辑不变，依然使用包含微信总量的映射
-                m_ch_special = [("微信好友总量", None), ("线上平台", "线上平台"), ("线下平台", "线下活动"), ("考试现场", "考试现场"), ("高校", "高校"), ("其他", "其他")]
-                m_on_special = [("微信好友总量", None), ("网站", "网站"), ("小红书", "小红书"), ("公众号", "公众号"), ("抖音", "抖音"), ("视频号", "视频号"), ("其他", "其他")]
-                
-                proc.gen_special_city_report(df_clean, df_dc, os.path.join(base_dir, f"{base_name}_07_单独地市_渠道.xlsx"), m_ch_special, False)
-                proc.gen_special_city_report(df_clean, df_dc, os.path.join(base_dir, f"{base_name}_08_单独地市_线上.xlsx"), m_on_special, True)
-                self.log("✅ 单独地市表已生成")
+                proc.gen_special_city_report(df_clean, df_dc, os.path.join(base_dir, f"{base_name}_07_单独地市_渠道.xlsx"), m_ch, False)
+                proc.gen_special_city_report(df_clean, df_dc, os.path.join(base_dir, f"{base_name}_08_单独地市_线上.xlsx"), m_on, True)
+                self.log("✅ 单独地市表 已生成")
+                if do_retention:
+                    proc.gen_wide_retention(df_ret, os.path.join(base_dir, f"{base_name}_07_单独地市_渠道_留存版.xlsx"), m_ch_ret, False, False, True)
+                    proc.gen_wide_retention(df_ret, os.path.join(base_dir, f"{base_name}_08_单独地市_线上_留存版.xlsx"), m_on_ret, True, False, True)
+                    self.log("✅ 单独地市表[留存版] 已生成")
 
             if self.ent_d.get().strip():
                 proc.use_special_city = self.v_special.get()
