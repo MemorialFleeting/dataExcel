@@ -181,12 +181,9 @@ class UniversalProcessor:
 
         col_z_name = df.columns[25] if len(df.columns) > 25 else None
         
-        # ---------------------------------------------------------
-        # 4.0 质检升级：获取并统一 ExternalUserId 和 质检相关列
-        # ---------------------------------------------------------
         ext_col = 'ExternalUserId'
         if ext_col not in df.columns and len(df.columns) > 1:
-            ext_col = df.columns[1] # 如果没有叫ExternalUserId的，默认抓第2列
+            ext_col = df.columns[1] 
         if ext_col in df.columns and ext_col != 'ExternalUserId':
             df.rename(columns={ext_col: 'ExternalUserId'}, inplace=True)
             if ext_col == col_z_name: col_z_name = 'ExternalUserId'
@@ -194,7 +191,7 @@ class UniversalProcessor:
         qc_required_cols = ['好友添加来源', '添加渠道码', '员工发送消息数', '客户回复消息数']
         qc_missing = [c for c in qc_required_cols if c not in df.columns]
         if qc_missing:
-            self.log(f"⚠️ 警告: 源表缺失质检列 {qc_missing}，将用0或'未知'自动填补，可能影响报表真实性！")
+            self.log(f"⚠️ 警告: 源表缺失质检列 {qc_missing}，将用0或'未知'自动填补！")
             for m in qc_missing:
                 if '数' in m: df[m] = 0
                 else: df[m] = "未知"
@@ -275,7 +272,7 @@ class UniversalProcessor:
             to_pct(tb_rate)
         ]
 
-    # --- ★★★ 质检数据分析报表生成 (A/B/C 分类 + 百分比整数化) ★★★ ---
+    # --- 质检报表生成 ---
     def gen_quality_inspection_report(self, df_clean, df_ret, output_file, remark_exclude, channel_exclude):
         self.log(f"生成 [质检分析综合报表]: {os.path.basename(output_file)}")
         
@@ -285,32 +282,40 @@ class UniversalProcessor:
             "C": ["甘肃分校", "海南分校", "内蒙古分校", "宁夏分校", "青海分校", "厦门分校", "上海分校", "天津分校", "西藏分校", "重庆分校"]
         }
 
-        # 辅助函数：安全除法 & 四舍五入到整数百分比
         def safe_div(a, b): return a / b if b else 0.0
         def to_pct_int(v): return f"{int(round(v * 100))}%"
 
+        base_path = os.path.splitext(output_file)[0]
+        csv_file1 = f"{base_path}_表1_详情明细底稿.csv"
+        csv_file3 = f"{base_path}_表3_加几个分校明细底稿.csv"
+        
+        # 表1：详情数据表
+        df1 = df_ret.copy()
+        df1 = df1[df1['标备总数'] == 1]
+        df1 = df1[df1['客户回复消息数'] == 0]
+        df1 = df1[df1['好友添加来源'].astype(str).str.contains('扫描渠道二维码', na=False)]
+        
+        if remark_exclude.strip():
+            rem_kws = [k.strip() for k in remark_exclude.replace('，', ',').split(',') if k.strip()]
+            if rem_kws: df1 = df1[~df1['备注名'].astype(str).apply(lambda x: any(k in x for k in rem_kws))]
+        if channel_exclude.strip():
+            ch_kws = [k.strip() for k in channel_exclude.replace('，', ',').split(',') if k.strip()]
+            if ch_kws: df1 = df1[~df1['添加渠道码'].astype(str).apply(lambda x: any(k in x for k in ch_kws))]
+        
+        df1.to_csv(csv_file1, index=False, encoding='utf-8-sig')
+        self.log(f"✅ [明细底稿] 已提取至 CSV: {os.path.basename(csv_file1)}")
+        
+        # 表3：加几个分校
+        df3_base = df_ret.drop_duplicates(subset=['ExternalUserId', '分校'])
+        df3 = df3_base.groupby('ExternalUserId').size().reset_index(name='跨分校')
+        
+        df3.to_csv(csv_file3, index=False, encoding='utf-8-sig')
+        self.log(f"✅ [明细底稿] 已提取至 CSV: {os.path.basename(csv_file3)}")
+
+        # 汇总看板 Excel
         with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
             
-            # ---------------------------------------------------------
-            # 表1：详情数据表 (不需ABC分类)
-            # ---------------------------------------------------------
-            df1 = df_ret.copy()
-            df1 = df1[df1['标备总数'] == 1]
-            df1 = df1[df1['客户回复消息数'] == 0]
-            df1 = df1[df1['好友添加来源'].astype(str).str.contains('扫描渠道二维码', na=False)]
-            
-            if remark_exclude.strip():
-                rem_kws = [k.strip() for k in remark_exclude.replace('，', ',').split(',') if k.strip()]
-                if rem_kws: df1 = df1[~df1['备注名'].astype(str).apply(lambda x: any(k in x for k in rem_kws))]
-            if channel_exclude.strip():
-                ch_kws = [k.strip() for k in channel_exclude.replace('，', ',').split(',') if k.strip()]
-                if ch_kws: df1 = df1[~df1['添加渠道码'].astype(str).apply(lambda x: any(k in x for k in ch_kws))]
-            
-            df1.to_excel(writer, sheet_name='1_详情数据表', index=False)
-            
-            # ---------------------------------------------------------
-            # 表2：虚假备注筛选 (ABC 分类)
-            # ---------------------------------------------------------
+            # 表2：虚假备注筛选
             rows_t2 = []
             grand_t2 = 0
             for g_name, branches in groups.items():
@@ -325,16 +330,7 @@ class UniversalProcessor:
             df2 = pd.DataFrame(rows_t2, columns=['分校', '虚假备注'])
             df2.to_excel(writer, sheet_name='2_虚假备注筛选', index=False)
             
-            # ---------------------------------------------------------
-            # 表3：加几个分校 (明细ID级别，不需分类)
-            # ---------------------------------------------------------
-            df3_base = df_ret.drop_duplicates(subset=['ExternalUserId', '分校'])
-            df3 = df3_base.groupby('ExternalUserId').size().reset_index(name='跨分校')
-            df3.to_excel(writer, sheet_name='3_加几个分校', index=False)
-            
-            # ---------------------------------------------------------
-            # 表4：跨10个以上分校 (ABC 分类)
-            # ---------------------------------------------------------
+            # 表4：跨10个以上分校
             over10_ids = df3[df3['跨分校'] >= 10]['ExternalUserId']
             df4_filtered = df3_base[df3_base['ExternalUserId'].isin(over10_ids)]
             rows_t4 = []
@@ -351,9 +347,7 @@ class UniversalProcessor:
             df4 = pd.DataFrame(rows_t4, columns=['分校', '添加客服量'])
             df4.to_excel(writer, sheet_name='4_跨10个以上分校', index=False)
             
-            # ---------------------------------------------------------
-            # 表5：会话情况 (ABC 分类 + 取整百分比)
-            # ---------------------------------------------------------
+            # 表5：会话情况
             rows_t5 = []
             grand_t5 = {'ret':0, 'has_rep':0, 'no_rep':0, 'db_zero':0}
             for g_name, branches in groups.items():
@@ -365,7 +359,6 @@ class UniversalProcessor:
                     no_reply = (grp['客户回复消息数'] == 0).sum()
                     double_zero = ((grp['员工发送消息数'] == 0) & (grp['客户回复消息数'] == 0)).sum()
                     
-                    # 累加给A/B/C类及全国
                     g_t5['ret'] += ret_cnt; g_t5['has_rep'] += has_reply; g_t5['no_rep'] += no_reply; g_t5['db_zero'] += double_zero
                     grand_t5['ret'] += ret_cnt; grand_t5['has_rep'] += has_reply; grand_t5['no_rep'] += no_reply; grand_t5['db_zero'] += double_zero
                     
@@ -384,12 +377,8 @@ class UniversalProcessor:
             df5 = pd.DataFrame(rows_t5, columns=['分校', '留存量', '客户有会话', '客户0会话', '客户0会话率', '双向无会话', '双向无会话率'])
             df5.to_excel(writer, sheet_name='5_会话情况', index=False)
 
-            # ---------------------------------------------------------
-            # 表6：好友添加来源 (ABC 分类 + 取整百分比 + 取用全量源数据)
-            # ---------------------------------------------------------
+            # 表6：好友添加来源
             std_sources = ["获客助手", "名片分享", "其他", "群聊", "扫描名片二维码", "扫描渠道二维码", "搜索手机号", "微信联系人", "未知"]
-            
-            # 清理来源名
             df_clean_t6 = df_clean.copy()
             df_clean_t6['好友添加来源'] = df_clean_t6['好友添加来源'].fillna('未知').apply(lambda x: x if x in std_sources else '其他')
             
@@ -405,7 +394,6 @@ class UniversalProcessor:
                     b_counts = [counts_dict.get(s, 0) for s in std_sources]
                     b_total = sum(b_counts)
                     
-                    # 更新A/B/C和全国累加器
                     for i, s in enumerate(std_sources):
                         g_t6[s] += b_counts[i]
                         grand_t6[s] += b_counts[i]
@@ -427,7 +415,6 @@ class UniversalProcessor:
             df6_final = pd.DataFrame(rows_t6, columns=headers)
             df6_final.to_excel(writer, sheet_name='6_好友添加来源', index=False)
 
-        # 全局追加 Excel 格式化样式
         self._style_excel(output_file)
 
     def gen_prov_long_merged(self, df_raw, df_dedup, output_file):
@@ -825,13 +812,14 @@ class UniversalProcessor:
         if ws['B1'].value == '地市': ws.column_dimensions['B'].width = 15
 
 # ==============================================================================
-# GUI 界面
+# GUI 界面重构 (4.2 标签页版)
 # ==============================================================================
 class App:
     def __init__(self, root):
         self.root = root
-        self.root.title("数据自动化统计工具 4.0")
-        self.root.geometry("720x850")
+        self.root.title("数据自动化统计工具 4.2 (UI重构优化版)")
+        # 高度从 850 大幅缩减到 680，完美适配 1080P 及小屏幕
+        self.root.geometry("760x680")
         self.root.configure(bg="#f8f9fa")
 
         style = ttk.Style()
@@ -843,24 +831,40 @@ class App:
         style.configure('TCheckbutton', background="#f8f9fa", font=("Microsoft YaHei", 9))
         style.configure('TButton', font=("Microsoft YaHei", 10), background="#007bff", foreground="white", borderwidth=0)
         style.map('TButton', background=[('active', '#0056b3')], foreground=[('active', 'white')])
+        
+        # 标签页样式
+        style.configure('TNotebook', background="#f8f9fa")
+        style.configure('TNotebook.Tab', font=("Microsoft YaHei", 10, "bold"), padding=[15, 5])
 
+        # 头部标题
         title_frame = tk.Frame(root, bg="#007bff", height=50)
         title_frame.pack(fill="x")
-        tk.Label(title_frame, text="🚀 数据自动化统计工具 4.0", font=("Microsoft YaHei", 15, "bold"), bg="#007bff", fg="white").pack(pady=10)
+        tk.Label(title_frame, text="🚀 数据自动化统计工具 4.2", font=("Microsoft YaHei", 15, "bold"), bg="#007bff", fg="white").pack(pady=10)
 
-        main_frame = tk.Frame(root, bg="#f8f9fa")
-        main_frame.pack(fill="both", expand=True, padx=20, pady=5)
+        # 核心变动：引入 Notebook 标签页
+        self.notebook = ttk.Notebook(root)
+        self.notebook.pack(fill="both", expand=True, padx=20, pady=10)
 
-        # ====== 步骤1 ======
-        step1_frame = ttk.LabelFrame(main_frame, text=" 步骤 1：数据源 ")
-        step1_frame.pack(fill="x", pady=2, ipady=3)
+        # 创建两个标签页面
+        tab_basic = ttk.Frame(self.notebook)
+        tab_qc = ttk.Frame(self.notebook)
+        
+        self.notebook.add(tab_basic, text=" 📑 基础设置与常规报表 ")
+        self.notebook.add(tab_qc, text=" 📊 质检数据分析 (4.2版) ")
+
+        # ==================================================
+        # 标签 1 内容：常规操作
+        # ==================================================
+        # 步骤1
+        step1_frame = ttk.LabelFrame(tab_basic, text=" 步骤 1：数据源 ")
+        step1_frame.pack(fill="x", pady=5, padx=10, ipady=3)
         self.ent_f = ttk.Entry(step1_frame)
         self.ent_f.pack(side="left", fill="x", expand=True, padx=(10, 5), pady=5)
         ttk.Button(step1_frame, text="📂 浏览文件", command=self.browse, width=12).pack(side="right", padx=10, pady=5)
 
-        # ====== 步骤2 ======
-        step2_frame = ttk.LabelFrame(main_frame, text=" 步骤 2：参数设置 ")
-        step2_frame.pack(fill="x", pady=5, ipady=3)
+        # 步骤2
+        step2_frame = ttk.LabelFrame(tab_basic, text=" 步骤 2：参数设置 ")
+        step2_frame.pack(fill="x", pady=5, padx=10, ipady=3)
         f_p1 = ttk.Frame(step2_frame)
         f_p1.pack(fill="x", padx=10, pady=3)
         ttk.Label(f_p1, text="📅 判断月份 (如 2026-01,2026-02):").pack(side="left")
@@ -880,9 +884,9 @@ class App:
         self.ent_ckw = ttk.Entry(f_p3)
         self.ent_ckw.pack(side="left", fill="x", expand=True, padx=10)
 
-        # ====== 步骤3 ======
-        step3_frame = ttk.LabelFrame(main_frame, text=" 步骤 3：常规报表任务 ")
-        step3_frame.pack(fill="x", pady=5, ipady=2)
+        # 步骤3
+        step3_frame = ttk.LabelFrame(tab_basic, text=" 步骤 3：常规报表任务 ")
+        step3_frame.pack(fill="x", pady=5, padx=10, ipady=2)
         
         self.v_retention = tk.BooleanVar(value=False)
         self.v_pl = tk.BooleanVar(value=False)
@@ -902,35 +906,48 @@ class App:
         ttk.Checkbutton(grid_frame, text="地市 - 合并数据 (2个表)", variable=self.v_cw).grid(row=1, column=1, sticky="w", pady=2, padx=10)
         ttk.Checkbutton(grid_frame, text="★ 单独地市 (24地市)", variable=self.v_special, style='TCheckbutton').grid(row=2, column=0, columnspan=2, sticky="w", padx=10, pady=2)
 
-        # ====== 步骤4 (4.0新增) ======
-        step4_frame = ttk.LabelFrame(main_frame, text=" 步骤 4：质检数据分析 (4.0版新增) ")
-        step4_frame.pack(fill="x", pady=5, ipady=2)
+        # ==================================================
+        # 标签 2 内容：质检专属配置
+        # ==================================================
+        step4_frame = ttk.LabelFrame(tab_qc, text=" 步骤 4：质检任务配置 ")
+        step4_frame.pack(fill="both", expand=True, pady=10, padx=10, ipady=5)
         
+        # 提示文字
+        info_lbl = tk.Label(step4_frame, text="💡 提示：启用质检报表后，系统将自动生成百万级防崩 CSV 明细底稿与带样式的可视化汇总 Excel 看板。", 
+                            bg="#e9ecef", fg="#495057", font=("Microsoft YaHei", 9), justify="left", wraplength=650)
+        info_lbl.pack(fill="x", padx=15, pady=10)
+
         self.v_qc = tk.BooleanVar(value=False)
-        ttk.Checkbutton(step4_frame, text="📊 启用并生成【质检数据综合报表】 (包含6个子表)", variable=self.v_qc, style='TCheckbutton').pack(anchor="w", padx=15, pady=5)
+        ttk.Checkbutton(step4_frame, text="📊 启用并生成【质检数据综合报表】", variable=self.v_qc, style='TCheckbutton').pack(anchor="w", padx=15, pady=10)
         
         f_q1 = ttk.Frame(step4_frame)
-        f_q1.pack(fill="x", padx=15, pady=2)
+        f_q1.pack(fill="x", padx=15, pady=5)
         ttk.Label(f_q1, text="🚫 备注名排除包含:").pack(side="left")
         self.ent_q_rem = ttk.Entry(f_q1)
         self.ent_q_rem.insert(0, "学26,学27,报26,课26,前台")
         self.ent_q_rem.pack(side="left", fill="x", expand=True, padx=5)
 
         f_q2 = ttk.Frame(step4_frame)
-        f_q2.pack(fill="x", padx=15, pady=2)
+        f_q2.pack(fill="x", padx=15, pady=5)
         ttk.Label(f_q2, text="🚫 渠道码排除包含:").pack(side="left")
         self.ent_q_ch = ttk.Entry(f_q2)
         self.ent_q_ch.insert(0, "前台")
         self.ent_q_ch.pack(side="left", fill="x", expand=True, padx=5)
 
-        # ====== 底部控制 ======
-        self.btn = ttk.Button(main_frame, text="▶ 开始处理", command=self.run)
-        self.btn.pack(pady=10, ipady=4, ipadx=20)
+        # ==================================================
+        # 底部常驻区域 (不随标签页切换而变化)
+        # ==================================================
+        bottom_frame = tk.Frame(root, bg="#f8f9fa")
+        bottom_frame.pack(fill="x", side="bottom", padx=20, pady=(0, 15))
 
-        log_frame = ttk.LabelFrame(main_frame, text=" 运行日志 ")
-        log_frame.pack(fill="both", expand=True, pady=2)
-        self.log_txt = scrolledtext.ScrolledText(log_frame, height=6, font=("Consolas", 9), bg="#f4f4f4", relief="flat")
+        log_frame = ttk.LabelFrame(bottom_frame, text=" 运行日志 ")
+        log_frame.pack(fill="x", side="bottom")
+        self.log_txt = scrolledtext.ScrolledText(log_frame, height=5, font=("Consolas", 9), bg="#f4f4f4", relief="flat")
         self.log_txt.pack(fill="both", expand=True, padx=5, pady=5)
+
+        self.btn = ttk.Button(bottom_frame, text="▶ 开始处理", command=self.run)
+        self.btn.pack(side="bottom", pady=10, ipady=4, ipadx=20)
+
 
     def log(self, msg):
         self.log_txt.config(state='normal')
@@ -943,7 +960,6 @@ class App:
         if fs: self.ent_f.delete(0, tk.END); self.ent_f.insert(0, ";".join(fs))
 
     def run(self):
-        # 如果勾选了质检报表，强制勾选留存数据
         if self.v_qc.get() and not self.v_retention.get():
             self.v_retention.set(True)
             self.log("⚠️ 质检报表依赖留存数据，已自动为您勾选【生成留存版报表】")
@@ -974,10 +990,10 @@ class App:
             base_dir = os.path.dirname(files[0])
             base_name = os.path.splitext(os.path.basename(files[0]))[0]
             
-            df_dc.to_excel(os.path.join(base_dir, f"{base_name}_00_清洗后源数据.xlsx"), index=False)
+            df_dc.to_csv(os.path.join(base_dir, f"{base_name}_00_清洗后源数据.csv"), index=False, encoding='utf-8-sig')
             if self.v_retention.get():
-                df_ret.to_excel(os.path.join(base_dir, f"{base_name}_00_留存版源数据(未去重).xlsx"), index=False)
-            self.log("✅ 源数据已保存")
+                df_ret.to_csv(os.path.join(base_dir, f"{base_name}_00_留存版源数据(未去重).csv"), index=False, encoding='utf-8-sig')
+            self.log("✅ 全量源底稿已安全保存为 CSV 格式")
 
             m_ch = [("微信好友总量", None), ("线上平台", "线上平台"), ("线下平台", "线下活动"), ("考试现场", "考试现场"), ("高校", "高校"), ("其他", "其他")]
             m_on = [("微信好友总量", None), ("网站", "网站"), ("小红书", "小红书"), ("公众号", "公众号"), ("抖音", "抖音"), ("视频号", "视频号"), ("其他", "其他")]
@@ -989,7 +1005,7 @@ class App:
 
             if self.v_pl.get():
                 proc.gen_prov_long_merged(df_clean, df_dp, os.path.join(base_dir, f"{base_name}_01_省份一维_合并报表.xlsx"))
-                self.log("✅ 省份一维表(合并版)已生成")
+                self.log("✅ 省份一维表已生成")
 
             if self.v_pw.get():
                 proc.gen_prov_wide(df_clean, df_dp, os.path.join(base_dir, f"{base_name}_02_省份合并_渠道.xlsx"), m_ch, False)
@@ -1002,7 +1018,7 @@ class App:
 
             if self.v_cl.get():
                 proc.gen_city_long_merged(df_clean, df_dc, df_ret, os.path.join(base_dir, f"{base_name}_04_地市一维_合并报表.xlsx"), do_retention)
-                self.log("✅ 地市一维表(合并版)已生成")
+                self.log("✅ 地市一维表已生成")
 
             if self.v_cw.get():
                 proc.gen_city_wide(df_clean, df_dc, os.path.join(base_dir, f"{base_name}_05_地市合并_渠道.xlsx"), m_ch, False)
@@ -1028,12 +1044,11 @@ class App:
                 target_df = df_dc if use_city else df_dp
                 proc.gen_date_summary(target_df, self.ent_d.get(), os.path.join(base_dir, f"{base_name}_09_日期汇总.xlsx"), use_city)
 
-            # --- 4.0 质检报表导出 ---
+            # --- 4.2 大数据质检 ---
             if self.v_qc.get():
                 if not df_ret.empty:
-                    qc_file = os.path.join(base_dir, f"{base_name}_10_质检分析报表.xlsx")
+                    qc_file = os.path.join(base_dir, f"{base_name}_10_质检分析汇总看板.xlsx")
                     proc.gen_quality_inspection_report(df_clean, df_ret, qc_file, self.ent_q_rem.get(), self.ent_q_ch.get())
-                    self.log("🎯 质检分析综合报表 (6个子表) 生成完毕！")
                 else:
                     self.log("❌ 无法生成质检报表：留存版数据为空，请检查源表数据！")
 
