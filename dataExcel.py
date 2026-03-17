@@ -97,7 +97,7 @@ class UniversalProcessor:
         return s
 
     def process_step1(self, df, date_keyword, custom_total_kws_str):
-        self.log("【步骤1】清洗数据、提取地市、计算标签...")
+        self.log("【数据清洗】正在提取地市与计算标签...")
         df.columns = [str(c).replace('\ufeff', '').strip() for c in df.columns]
         
         branch_keywords = ["通辽分校", "陕西分校", "湖北分校", "辽宁分校", "河北分校", "甘肃分校", "厦门分校", "福建分校", "山东分校", "北京分校", "安徽分校", "黑龙江分校", "吉林分校", "江苏分校", "重庆分校", "广东分校", "天津分校", "河南分校", "云南分校", "江西分校", "湖南分校", "贵州分校", "广西分校", "山西分校", "宁夏分校", "内蒙古分校", "浙江分校", "新疆分校", "青海分校", "南疆分校", "四川分校", "上海分校", "海南分校", "西藏分校", "赤峰"]
@@ -114,7 +114,6 @@ class UniversalProcessor:
             return "其它"
         df['所属类别'] = df.apply(determine_category, axis=1)
 
-        # 标签
         df['公职'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["26公职","27公职","28公职","29公职"]))
         kw_shiye = ["26事业","26三支","26社区","26辅警","26书记员","26国企","30事业","30三支","30社区","30辅警","30书记员","30国企", "27事业","27三支","27社区","27辅警","27书记员","27国企","28事业","28三支","28社区","28辅警","28书记员","28国企", "29事业","29三支","29社区","29辅警","29书记员","29国企"]
         df['事业辅助列'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, kw_shiye))
@@ -127,28 +126,20 @@ class UniversalProcessor:
         df['学历'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["30学历","26学历","27学历","28学历","29学历"]))
         df['其他'] = ""
         
-        # 自定义标备
         custom_kws = [k.strip() for k in custom_total_kws_str.replace('，', ',').split(',') if k.strip()]
         if custom_kws:
-            self.log(f"⚡ 启用自定义标备逻辑，关键词: {custom_kws}")
             def check_custom_total(remark):
                 if pd.isna(remark): return 0
-                remark_str = str(remark)
-                return 1 if any(kw in remark_str for kw in custom_kws) else 0
+                return 1 if any(kw in str(remark) for kw in custom_kws) else 0
             df['标备总数'] = df['备注名'].apply(check_custom_total)
         else:
             all_cols_check = ['公职', '事业辅助列', '教师', '文职', '医疗', '银行', '考研', '学历', '其他']
             df['标备总数'] = df.apply(lambda row: 1 if any(row[c] in [1, "1"] for c in all_cols_check) else 0, axis=1)
 
-        # 多月份
         date_kws = [k.strip() for k in date_keyword.replace('，', ',').split(',') if k.strip()]
         if not date_kws: date_kws = ["FAIL_SAFE"]
         
-        def check_is_new(create_time):
-            s_time = str(create_time)
-            if any(k in s_time for k in date_kws): return "是"
-            return "否"
-        df['！！！是否新增'] = df['创建时间'].apply(check_is_new)
+        df['！！！是否新增'] = df['创建时间'].apply(lambda x: "是" if any(k in str(x) for k in date_kws) else "否")
 
         kw_ch = ["网络","社会","高校","线上","线上平台","线上活动","现场","线下活动"]
         res_ch = ["线上平台","线下活动","高校","线上平台","线上平台","线上平台","考试现场","线下活动"]
@@ -158,11 +149,7 @@ class UniversalProcessor:
         res_on = ["网站","公众号","小红书","视频号","抖音","网站","网站","网站","网站","其他"]
         df['线上渠道'] = df['渠道活码分组'].apply(lambda x: self.excel_lookup_find(x, kw_on, res_on, "其他"))
 
-        def check_shiye2(row):
-            if row['公职'] in [1, "1"]: return 0
-            if row['事业辅助列'] in [1, "1"]: return 1
-            return 0
-        df['事业2'] = df.apply(check_shiye2, axis=1)
+        df['事业2'] = df.apply(lambda row: 1 if row['公职'] not in [1, "1"] and row['事业辅助列'] in [1, "1"] else 0, axis=1)
 
         def check_reply(row):
             has_reply = pd.notna(row['客户上次回复时间']) and str(row['客户上次回复时间']).strip() != ""
@@ -174,11 +161,7 @@ class UniversalProcessor:
             except: return str(val)
         df['日期'] = df['好友添加时间'].apply(fmt_date)
 
-        # 检查核心列
         has_status_col = '添加好友状态' in df.columns
-        if not has_status_col:
-            self.log("⚠️ 警告：源数据缺少 '添加好友状态' 列，留存版报表将无法正确生成！")
-
         col_z_name = df.columns[25] if len(df.columns) > 25 else None
         
         ext_col = 'ExternalUserId'
@@ -188,10 +171,10 @@ class UniversalProcessor:
             df.rename(columns={ext_col: 'ExternalUserId'}, inplace=True)
             if ext_col == col_z_name: col_z_name = 'ExternalUserId'
         
-        qc_required_cols = ['好友添加来源', '添加渠道码', '员工发送消息数', '客户回复消息数']
+        # 提取 5 个质检专属字段
+        qc_required_cols = ['好友添加来源', '添加渠道码', '员工发送消息数', '客户回复消息数', '是否同意会话存档']
         qc_missing = [c for c in qc_required_cols if c not in df.columns]
         if qc_missing:
-            self.log(f"⚠️ 警告: 源表缺失质检列 {qc_missing}，将用0或'未知'自动填补！")
             for m in qc_missing:
                 if '数' in m: df[m] = 0
                 else: df[m] = "未知"
@@ -216,7 +199,6 @@ class UniversalProcessor:
         
         if has_status_col:
             df_retention = df_clean[df_clean['添加好友状态'].astype(str).str.contains("已添加", na=False)].copy()
-            self.log(f"留存版筛选结果：符合'已添加'的共有 {len(df_retention)} 行")
         else:
             df_retention = pd.DataFrame()
 
@@ -273,9 +255,23 @@ class UniversalProcessor:
         ]
 
     # --- 质检报表生成 ---
-    def gen_quality_inspection_report(self, df_clean, df_ret, output_file, remark_exclude, channel_exclude):
+    def gen_quality_inspection_report(self, df_clean, df_ret, output_file, remark_exclude, channel_exclude, qc_dates_str):
         self.log(f"生成 [质检分析综合报表]: {os.path.basename(output_file)}")
         
+        # 独立过滤日期
+        df_clean_qc = df_clean.copy()
+        df_ret_qc = df_ret.copy()
+        if qc_dates_str.strip():
+            target_dates = [d.strip() for d in qc_dates_str.replace('，', ',').split(',') if d.strip()]
+            if target_dates:
+                df_clean_qc = df_clean_qc[df_clean_qc['日期'].isin(target_dates)]
+                df_ret_qc = df_ret_qc[df_ret_qc['日期'].isin(target_dates)]
+                self.log(f"🔍 质检模块已应用独立日期过滤: {target_dates}")
+
+        if df_ret_qc.empty:
+            self.log("❌ 警告：经过日期过滤后，质检数据为空，停止生成本报表！")
+            return
+
         groups = {
             "A": ["山东分校", "广东分校", "河南分校", "河北分校", "湖北分校", "吉林分校", "山西分校", "陕西分校", "安徽分校", "辽宁分校", "云南分校"],
             "B": ["江苏分校", "湖南分校", "贵州分校", "四川分校", "黑龙江分校", "广西分校", "新疆分校", "浙江分校", "江西分校", "福建分校", "北京分校"],
@@ -289,8 +285,10 @@ class UniversalProcessor:
         csv_file1 = f"{base_path}_表1_详情明细底稿.csv"
         csv_file3 = f"{base_path}_表3_加几个分校明细底稿.csv"
         
-        # 表1：详情数据表
-        df1 = df_ret.copy()
+        # ---------------------------------------------------------
+        # 表1：详情数据表 (不以 会话存档 作为过滤条件)
+        # ---------------------------------------------------------
+        df1 = df_ret_qc.copy()
         df1 = df1[df1['标备总数'] == 1]
         df1 = df1[df1['客户回复消息数'] == 0]
         df1 = df1[df1['好友添加来源'].astype(str).str.contains('扫描渠道二维码', na=False)]
@@ -303,25 +301,30 @@ class UniversalProcessor:
             if ch_kws: df1 = df1[~df1['添加渠道码'].astype(str).apply(lambda x: any(k in x for k in ch_kws))]
         
         df1.to_csv(csv_file1, index=False, encoding='utf-8-sig')
-        self.log(f"✅ [明细底稿] 已提取至 CSV: {os.path.basename(csv_file1)}")
+        self.log(f"✅ [表1] 已提取至 CSV: {os.path.basename(csv_file1)}")
         
+        # ---------------------------------------------------------
         # 表3：加几个分校
-        df3_base = df_ret.drop_duplicates(subset=['ExternalUserId', '分校'])
+        # ---------------------------------------------------------
+        df3_base = df_ret_qc.drop_duplicates(subset=['ExternalUserId', '分校'])
         df3 = df3_base.groupby('ExternalUserId').size().reset_index(name='跨分校')
         
         df3.to_csv(csv_file3, index=False, encoding='utf-8-sig')
-        self.log(f"✅ [明细底稿] 已提取至 CSV: {os.path.basename(csv_file3)}")
+        self.log(f"✅ [表3] 已提取至 CSV: {os.path.basename(csv_file3)}")
 
-        # 汇总看板 Excel
+        # ---------------------------------------------------------
+        # 汇总看板 Excel 
+        # ---------------------------------------------------------
         with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
             
-            # 表2：虚假备注筛选
+            # 表2：虚假备注筛选 (★ 核心过滤：基于表1进一步筛出会话存档=是)
+            df1_for_t2 = df1[df1['是否同意会话存档'].astype(str) == '是']
             rows_t2 = []
             grand_t2 = 0
             for g_name, branches in groups.items():
                 g_total = 0
                 for branch in branches:
-                    cnt = len(df1[df1['分校'] == branch])
+                    cnt = len(df1_for_t2[df1_for_t2['分校'] == branch])
                     g_total += cnt
                     rows_t2.append([branch, cnt])
                 rows_t2.append([f"{g_name}类总计", g_total])
@@ -353,7 +356,7 @@ class UniversalProcessor:
             for g_name, branches in groups.items():
                 g_t5 = {'ret':0, 'has_rep':0, 'no_rep':0, 'db_zero':0}
                 for branch in branches:
-                    grp = df_ret[df_ret['分校'] == branch]
+                    grp = df_ret_qc[df_ret_qc['分校'] == branch]
                     ret_cnt = len(grp)
                     has_reply = (grp['客户回复消息数'] > 0).sum()
                     no_reply = (grp['客户回复消息数'] == 0).sum()
@@ -377,10 +380,11 @@ class UniversalProcessor:
             df5 = pd.DataFrame(rows_t5, columns=['分校', '留存量', '客户有会话', '客户0会话', '客户0会话率', '双向无会话', '双向无会话率'])
             df5.to_excel(writer, sheet_name='5_会话情况', index=False)
 
-            # 表6：好友添加来源
+            # 表6：好友添加来源 
             std_sources = ["获客助手", "名片分享", "其他", "群聊", "扫描名片二维码", "扫描渠道二维码", "搜索手机号", "微信联系人", "未知"]
-            df_clean_t6 = df_clean.copy()
-            df_clean_t6['好友添加来源'] = df_clean_t6['好友添加来源'].fillna('未知').apply(lambda x: x if x in std_sources else '其他')
+            
+            temp_clean_t6 = df_clean_qc.copy()
+            temp_clean_t6['好友添加来源'] = temp_clean_t6['好友添加来源'].fillna('未知').apply(lambda x: x if x in std_sources else '其他')
             
             rows_t6 = []
             grand_t6 = {s: 0 for s in std_sources}
@@ -388,7 +392,7 @@ class UniversalProcessor:
             for g_name, branches in groups.items():
                 g_t6 = {s: 0 for s in std_sources}
                 for branch in branches:
-                    grp = df_clean_t6[df_clean_t6['分校'] == branch]
+                    grp = temp_clean_t6[temp_clean_t6['分校'] == branch]
                     counts_dict = grp['好友添加来源'].value_counts().to_dict()
                     
                     b_counts = [counts_dict.get(s, 0) for s in std_sources]
@@ -812,14 +816,13 @@ class UniversalProcessor:
         if ws['B1'].value == '地市': ws.column_dimensions['B'].width = 15
 
 # ==============================================================================
-# GUI 界面重构 (4.2 标签页版)
+# GUI 界面 (4.4 业务解耦版)
 # ==============================================================================
 class App:
     def __init__(self, root):
         self.root = root
-        self.root.title("数据自动化统计工具 4.2 (UI重构优化版)")
-        # 高度从 850 大幅缩减到 680，完美适配 1080P 及小屏幕
-        self.root.geometry("760x680")
+        self.root.title("数据自动化统计工具 4.4 (宽屏解耦版)")
+        self.root.geometry("980x520")
         self.root.configure(bg="#f8f9fa")
 
         style = ttk.Style()
@@ -831,61 +834,69 @@ class App:
         style.configure('TCheckbutton', background="#f8f9fa", font=("Microsoft YaHei", 9))
         style.configure('TButton', font=("Microsoft YaHei", 10), background="#007bff", foreground="white", borderwidth=0)
         style.map('TButton', background=[('active', '#0056b3')], foreground=[('active', 'white')])
-        
-        # 标签页样式
         style.configure('TNotebook', background="#f8f9fa")
         style.configure('TNotebook.Tab', font=("Microsoft YaHei", 10, "bold"), padding=[15, 5])
 
-        # 头部标题
         title_frame = tk.Frame(root, bg="#007bff", height=50)
         title_frame.pack(fill="x")
-        tk.Label(title_frame, text="🚀 数据自动化统计工具 4.2", font=("Microsoft YaHei", 15, "bold"), bg="#007bff", fg="white").pack(pady=10)
+        tk.Label(title_frame, text="🚀 数据自动化统计工具 4.4", font=("Microsoft YaHei", 15, "bold"), bg="#007bff", fg="white").pack(pady=10)
 
-        # 核心变动：引入 Notebook 标签页
-        self.notebook = ttk.Notebook(root)
-        self.notebook.pack(fill="both", expand=True, padx=20, pady=10)
+        main_frame = tk.Frame(root, bg="#f8f9fa")
+        main_frame.pack(fill="both", expand=True, padx=15, pady=10)
 
-        # 创建两个标签页面
-        tab_basic = ttk.Frame(self.notebook)
+        left_frame = tk.Frame(main_frame, bg="#f8f9fa")
+        left_frame.pack(side="left", fill="both", expand=True)
+
+        right_frame = tk.Frame(main_frame, bg="#f8f9fa", width=350)
+        right_frame.pack(side="right", fill="y", padx=(15, 0))
+        right_frame.pack_propagate(False)
+
+        self.notebook = ttk.Notebook(left_frame)
+        self.notebook.pack(fill="both", expand=True)
+
+        tab_import = ttk.Frame(self.notebook)
+        tab_regular = ttk.Frame(self.notebook)
         tab_qc = ttk.Frame(self.notebook)
         
-        self.notebook.add(tab_basic, text=" 📑 基础设置与常规报表 ")
-        self.notebook.add(tab_qc, text=" 📊 质检数据分析 (4.2版) ")
+        self.notebook.add(tab_import, text=" 📂 数据源导入 ")
+        self.notebook.add(tab_regular, text=" 📈 常规报表 ")
+        self.notebook.add(tab_qc, text=" 📊 质检数据分析 ")
 
-        # ==================================================
-        # 标签 1 内容：常规操作
-        # ==================================================
-        # 步骤1
-        step1_frame = ttk.LabelFrame(tab_basic, text=" 步骤 1：数据源 ")
-        step1_frame.pack(fill="x", pady=5, padx=10, ipady=3)
-        self.ent_f = ttk.Entry(step1_frame)
-        self.ent_f.pack(side="left", fill="x", expand=True, padx=(10, 5), pady=5)
-        ttk.Button(step1_frame, text="📂 浏览文件", command=self.browse, width=12).pack(side="right", padx=10, pady=5)
+        # ==================== 标签 1：导入 ====================
+        step1_frame = ttk.LabelFrame(tab_import, text=" 步骤 1：导入数据 ")
+        step1_frame.pack(fill="x", pady=20, padx=15, ipady=15)
+        
+        tk.Label(step1_frame, text="请选择包含数据的 Excel 或 CSV 文件（支持多选）", bg="#f8f9fa", fg="#666").pack(pady=(5, 10))
+        f_file = ttk.Frame(step1_frame)
+        f_file.pack(fill="x", padx=15)
+        self.ent_f = ttk.Entry(f_file)
+        self.ent_f.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        ttk.Button(f_file, text="📂 浏览文件", command=self.browse, width=12).pack(side="right")
 
-        # 步骤2
-        step2_frame = ttk.LabelFrame(tab_basic, text=" 步骤 2：参数设置 ")
-        step2_frame.pack(fill="x", pady=5, padx=10, ipady=3)
+        # ==================== 标签 2：常规报表 ====================
+        step2_frame = ttk.LabelFrame(tab_regular, text=" 步骤 2：参数设置 ")
+        step2_frame.pack(fill="x", pady=(10, 5), padx=10, ipady=3)
+        
         f_p1 = ttk.Frame(step2_frame)
-        f_p1.pack(fill="x", padx=10, pady=3)
-        ttk.Label(f_p1, text="📅 判断月份 (如 2026-01,2026-02):").pack(side="left")
-        self.ent_m = ttk.Entry(f_p1, width=25)
+        f_p1.pack(fill="x", padx=10, pady=5)
+        ttk.Label(f_p1, text="📅 判断月份 (如 2026-01):").pack(side="left")
+        self.ent_m = ttk.Entry(f_p1, width=20)
         self.ent_m.insert(0, "2026-01")
         self.ent_m.pack(side="left", padx=10)
 
         f_p2 = ttk.Frame(step2_frame)
-        f_p2.pack(fill="x", padx=10, pady=3)
-        ttk.Label(f_p2, text="📆 特定日期 (如 1月1日,1月2日):").pack(side="left")
+        f_p2.pack(fill="x", padx=10, pady=5)
+        ttk.Label(f_p2, text="📆 特定日期 (如 1月1日):").pack(side="left")
         self.ent_d = ttk.Entry(f_p2)
         self.ent_d.pack(side="left", fill="x", expand=True, padx=10)
 
         f_p3 = ttk.Frame(step2_frame)
-        f_p3.pack(fill="x", padx=10, pady=3)
-        ttk.Label(f_p3, text="🔍 自定义标备词 (选填,逗号隔开):").pack(side="left")
+        f_p3.pack(fill="x", padx=10, pady=5)
+        ttk.Label(f_p3, text="🔍 自定义标备词:").pack(side="left")
         self.ent_ckw = ttk.Entry(f_p3)
         self.ent_ckw.pack(side="left", fill="x", expand=True, padx=10)
 
-        # 步骤3
-        step3_frame = ttk.LabelFrame(tab_basic, text=" 步骤 3：常规报表任务 ")
+        step3_frame = ttk.LabelFrame(tab_regular, text=" 步骤 3：常规报表任务 ")
         step3_frame.pack(fill="x", pady=5, padx=10, ipady=2)
         
         self.v_retention = tk.BooleanVar(value=False)
@@ -895,58 +906,57 @@ class App:
         self.v_cw = tk.BooleanVar(value=False)
         self.v_special = tk.BooleanVar(value=False)
 
-        chk_ret = ttk.Checkbutton(step3_frame, text="🔥 同时生成“留存版”报表 (基础功能依赖)", variable=self.v_retention, style='TCheckbutton')
-        chk_ret.pack(anchor="w", padx=15, pady=2)
-
+        ttk.Checkbutton(step3_frame, text="🔥 同时生成“留存版”报表 (部分表依赖)", variable=self.v_retention, style='TCheckbutton').pack(anchor="w", padx=15, pady=5)
         grid_frame = ttk.Frame(step3_frame)
         grid_frame.pack(fill="x", padx=15, pady=2)
-        ttk.Checkbutton(grid_frame, text="省份 - 一维数据 (合并版)", variable=self.v_pl).grid(row=0, column=0, sticky="w", pady=2, padx=10)
-        ttk.Checkbutton(grid_frame, text="省份 - 合并数据 (2个表)", variable=self.v_pw).grid(row=0, column=1, sticky="w", pady=2, padx=10)
-        ttk.Checkbutton(grid_frame, text="地市 - 一维数据 (合并版)", variable=self.v_cl).grid(row=1, column=0, sticky="w", pady=2, padx=10)
-        ttk.Checkbutton(grid_frame, text="地市 - 合并数据 (2个表)", variable=self.v_cw).grid(row=1, column=1, sticky="w", pady=2, padx=10)
-        ttk.Checkbutton(grid_frame, text="★ 单独地市 (24地市)", variable=self.v_special, style='TCheckbutton').grid(row=2, column=0, columnspan=2, sticky="w", padx=10, pady=2)
+        ttk.Checkbutton(grid_frame, text="省份 - 一维数据", variable=self.v_pl).grid(row=0, column=0, sticky="w", pady=5, padx=10)
+        ttk.Checkbutton(grid_frame, text="省份 - 宽表数据", variable=self.v_pw).grid(row=0, column=1, sticky="w", pady=5, padx=10)
+        ttk.Checkbutton(grid_frame, text="地市 - 一维数据", variable=self.v_cl).grid(row=1, column=0, sticky="w", pady=5, padx=10)
+        ttk.Checkbutton(grid_frame, text="地市 - 宽表数据", variable=self.v_cw).grid(row=1, column=1, sticky="w", pady=5, padx=10)
+        ttk.Checkbutton(grid_frame, text="★ 单独地市报表", variable=self.v_special).grid(row=2, column=0, columnspan=2, sticky="w", padx=10, pady=5)
 
-        # ==================================================
-        # 标签 2 内容：质检专属配置
-        # ==================================================
-        step4_frame = ttk.LabelFrame(tab_qc, text=" 步骤 4：质检任务配置 ")
+        # ★ 常规页签专属按钮
+        self.btn_regular = ttk.Button(tab_regular, text="📈 仅生成常规报表", command=lambda: self.run('regular'))
+        self.btn_regular.pack(side="bottom", fill="x", pady=10, padx=15, ipady=8)
+
+        # ==================== 标签 3：质检分析 ====================
+        step4_frame = ttk.LabelFrame(tab_qc, text=" 质检专属配置 (不干扰常规报表) ")
         step4_frame.pack(fill="both", expand=True, pady=10, padx=10, ipady=5)
         
-        # 提示文字
-        info_lbl = tk.Label(step4_frame, text="💡 提示：启用质检报表后，系统将自动生成百万级防崩 CSV 明细底稿与带样式的可视化汇总 Excel 看板。", 
-                            bg="#e9ecef", fg="#495057", font=("Microsoft YaHei", 9), justify="left", wraplength=650)
+        info_lbl = tk.Label(step4_frame, text="💡 提示：点击下方按钮将只执行质检逻辑。表1(明细)不会受到会话存档限制，表2(汇总)会自动过滤出会话存档=是的数据。", 
+                            bg="#e9ecef", fg="#495057", font=("Microsoft YaHei", 9), justify="left", wraplength=500)
         info_lbl.pack(fill="x", padx=15, pady=10)
 
-        self.v_qc = tk.BooleanVar(value=False)
-        ttk.Checkbutton(step4_frame, text="📊 启用并生成【质检数据综合报表】", variable=self.v_qc, style='TCheckbutton').pack(anchor="w", padx=15, pady=10)
-        
+        f_q0 = ttk.Frame(step4_frame)
+        f_q0.pack(fill="x", padx=15, pady=6)
+        ttk.Label(f_q0, text="📆 独立过滤日期:").pack(side="left")
+        self.ent_q_date = ttk.Entry(f_q0)
+        self.ent_q_date.pack(side="left", fill="x", expand=True, padx=5)
+        ttk.Label(f_q0, text="(如 3月3日,3月7日)", foreground="gray").pack(side="right")
+
         f_q1 = ttk.Frame(step4_frame)
-        f_q1.pack(fill="x", padx=15, pady=5)
+        f_q1.pack(fill="x", padx=15, pady=6)
         ttk.Label(f_q1, text="🚫 备注名排除包含:").pack(side="left")
         self.ent_q_rem = ttk.Entry(f_q1)
         self.ent_q_rem.insert(0, "学26,学27,报26,课26,前台")
         self.ent_q_rem.pack(side="left", fill="x", expand=True, padx=5)
 
         f_q2 = ttk.Frame(step4_frame)
-        f_q2.pack(fill="x", padx=15, pady=5)
+        f_q2.pack(fill="x", padx=15, pady=6)
         ttk.Label(f_q2, text="🚫 渠道码排除包含:").pack(side="left")
         self.ent_q_ch = ttk.Entry(f_q2)
         self.ent_q_ch.insert(0, "前台")
         self.ent_q_ch.pack(side="left", fill="x", expand=True, padx=5)
 
-        # ==================================================
-        # 底部常驻区域 (不随标签页切换而变化)
-        # ==================================================
-        bottom_frame = tk.Frame(root, bg="#f8f9fa")
-        bottom_frame.pack(fill="x", side="bottom", padx=20, pady=(0, 15))
+        # ★ 质检页签专属按钮
+        self.btn_qc = ttk.Button(tab_qc, text="🎯 仅生成质检报表", command=lambda: self.run('qc'))
+        self.btn_qc.pack(side="bottom", fill="x", pady=10, padx=15, ipady=8)
 
-        log_frame = ttk.LabelFrame(bottom_frame, text=" 运行日志 ")
-        log_frame.pack(fill="x", side="bottom")
-        self.log_txt = scrolledtext.ScrolledText(log_frame, height=5, font=("Consolas", 9), bg="#f4f4f4", relief="flat")
-        self.log_txt.pack(fill="both", expand=True, padx=5, pady=5)
-
-        self.btn = ttk.Button(bottom_frame, text="▶ 开始处理", command=self.run)
-        self.btn.pack(side="bottom", pady=10, ipady=4, ipadx=20)
+        # ==================== 右侧：常驻日志 ====================
+        log_label_frame = ttk.LabelFrame(right_frame, text=" 实时运行日志 ")
+        log_label_frame.pack(fill="both", expand=True)
+        self.log_txt = scrolledtext.ScrolledText(log_label_frame, font=("Consolas", 9), bg="#1e1e1e", fg="#d4d4d4", relief="flat")
+        self.log_txt.pack(fill="both", expand=True, padx=2, pady=2)
 
 
     def log(self, msg):
@@ -959,108 +969,102 @@ class App:
         fs = filedialog.askopenfilenames(filetypes=[("Excel", "*.xlsx *.xls *.csv")])
         if fs: self.ent_f.delete(0, tk.END); self.ent_f.insert(0, ";".join(fs))
 
-    def run(self):
-        if self.v_qc.get() and not self.v_retention.get():
-            self.v_retention.set(True)
-            self.log("⚠️ 质检报表依赖留存数据，已自动为您勾选【生成留存版报表】")
-            
-        threading.Thread(target=self.process).start()
+    # ★ 运行方法改造：接收 task_type 区分任务
+    def run(self, task_type):
+        threading.Thread(target=self.process, args=(task_type,)).start()
 
-    def process(self):
+    def process(self, task_type):
         files = self.ent_f.get().split(";")
         if not files or files[0] == "": return messagebox.showerror("错误", "请先选择数据文件！")
         
         start_time = time.time()
-        self.btn.config(state="disabled", text="⏳ 处理中...")
+        # 锁定两个按钮
+        self.btn_regular.config(state="disabled", text="⏳ 处理中...")
+        self.btn_qc.config(state="disabled", text="⏳ 处理中...")
         self.log_txt.config(state='normal')
         self.log_txt.delete(1.0, tk.END)
         self.log_txt.config(state='disabled')
         
         try:
+            task_name = "【质检业务流】" if task_type == 'qc' else "【常规业务流】"
+            self.log(f"🚀 开始执行 {task_name}")
+            
             proc = UniversalProcessor(self.log)
-            self.log("开始读取文件...")
             dfs = []
             for f in files:
                 if f.strip(): dfs.append(pd.read_excel(f))
             if not dfs: raise ValueError("未读取到有效数据")
             full_df = pd.concat(dfs, ignore_index=True)
             
+            # 第一步：通用的全量提取与清洗（底层复用）
             df_clean, df_dp, df_dc, df_ret = proc.process_step1(full_df, self.ent_m.get(), self.ent_ckw.get())
             
             base_dir = os.path.dirname(files[0])
             base_name = os.path.splitext(os.path.basename(files[0]))[0]
-            
-            df_dc.to_csv(os.path.join(base_dir, f"{base_name}_00_清洗后源数据.csv"), index=False, encoding='utf-8-sig')
-            if self.v_retention.get():
-                df_ret.to_csv(os.path.join(base_dir, f"{base_name}_00_留存版源数据(未去重).csv"), index=False, encoding='utf-8-sig')
-            self.log("✅ 全量源底稿已安全保存为 CSV 格式")
 
-            m_ch = [("微信好友总量", None), ("线上平台", "线上平台"), ("线下平台", "线下活动"), ("考试现场", "考试现场"), ("高校", "高校"), ("其他", "其他")]
-            m_on = [("微信好友总量", None), ("网站", "网站"), ("小红书", "小红书"), ("公众号", "公众号"), ("抖音", "抖音"), ("视频号", "视频号"), ("其他", "其他")]
-            
-            m_ch_ret = [("微信好友总量", None), ("线上平台", "线上平台"), ("线下平台", "线下活动"), ("考试现场", "考试现场"), ("高校", "高校"), ("其他", "其他")]
-            m_on_ret = [("微信好友总量", None), ("网站", "网站"), ("小红书", "小红书"), ("公众号", "公众号"), ("抖音", "抖音"), ("视频号", "视频号"), ("其他", "其他")]
+            # ==============================
+            # 分支 A：常规报表逻辑
+            # ==============================
+            if task_type == 'regular':
+                # 常规底稿保存
+                df_dc.to_csv(os.path.join(base_dir, f"{base_name}_00_清洗后源数据.csv"), index=False, encoding='utf-8-sig')
+                if self.v_retention.get():
+                    df_ret.to_csv(os.path.join(base_dir, f"{base_name}_00_留存版源数据(未去重).csv"), index=False, encoding='utf-8-sig')
+                self.log("✅ 底稿保存完毕")
 
-            do_retention = self.v_retention.get() and not df_ret.empty
+                m_ch = [("微信好友总量", None), ("线上平台", "线上平台"), ("线下平台", "线下活动"), ("考试现场", "考试现场"), ("高校", "高校"), ("其他", "其他")]
+                m_on = [("微信好友总量", None), ("网站", "网站"), ("小红书", "小红书"), ("公众号", "公众号"), ("抖音", "抖音"), ("视频号", "视频号"), ("其他", "其他")]
+                m_ch_ret = m_ch.copy(); m_on_ret = m_on.copy()
 
-            if self.v_pl.get():
-                proc.gen_prov_long_merged(df_clean, df_dp, os.path.join(base_dir, f"{base_name}_01_省份一维_合并报表.xlsx"))
-                self.log("✅ 省份一维表已生成")
+                do_retention = self.v_retention.get() and not df_ret.empty
 
-            if self.v_pw.get():
-                proc.gen_prov_wide(df_clean, df_dp, os.path.join(base_dir, f"{base_name}_02_省份合并_渠道.xlsx"), m_ch, False)
-                proc.gen_prov_wide(df_clean, df_dp, os.path.join(base_dir, f"{base_name}_03_省份合并_线上.xlsx"), m_on, True)
-                self.log("✅ 省份宽表已生成")
-                if do_retention:
-                    proc.gen_wide_retention(df_ret, os.path.join(base_dir, f"{base_name}_02_省份合并_渠道_留存版.xlsx"), m_ch_ret, False, True, False)
-                    proc.gen_wide_retention(df_ret, os.path.join(base_dir, f"{base_name}_03_省份合并_线上_留存版.xlsx"), m_on_ret, True, True, False)
-                    self.log("✅ 省份宽表[留存版] 已生成")
+                if self.v_pl.get(): proc.gen_prov_long_merged(df_clean, df_dp, os.path.join(base_dir, f"{base_name}_01_省份一维_合并报表.xlsx"))
+                if self.v_pw.get():
+                    proc.gen_prov_wide(df_clean, df_dp, os.path.join(base_dir, f"{base_name}_02_省份合并_渠道.xlsx"), m_ch, False)
+                    proc.gen_prov_wide(df_clean, df_dp, os.path.join(base_dir, f"{base_name}_03_省份合并_线上.xlsx"), m_on, True)
+                    if do_retention:
+                        proc.gen_wide_retention(df_ret, os.path.join(base_dir, f"{base_name}_02_省份合并_渠道_留存版.xlsx"), m_ch_ret, False, True, False)
+                        proc.gen_wide_retention(df_ret, os.path.join(base_dir, f"{base_name}_03_省份合并_线上_留存版.xlsx"), m_on_ret, True, True, False)
+                if self.v_cl.get(): proc.gen_city_long_merged(df_clean, df_dc, df_ret, os.path.join(base_dir, f"{base_name}_04_地市一维_合并报表.xlsx"), do_retention)
+                if self.v_cw.get():
+                    proc.gen_city_wide(df_clean, df_dc, os.path.join(base_dir, f"{base_name}_05_地市合并_渠道.xlsx"), m_ch, False)
+                    proc.gen_city_wide(df_clean, df_dc, os.path.join(base_dir, f"{base_name}_06_地市合并_线上.xlsx"), m_on, True)
+                    if do_retention:
+                        proc.gen_wide_retention(df_ret, os.path.join(base_dir, f"{base_name}_05_地市合并_渠道_留存版.xlsx"), m_ch_ret, False, False, False)
+                        proc.gen_wide_retention(df_ret, os.path.join(base_dir, f"{base_name}_06_地市合并_线上_留存版.xlsx"), m_on_ret, True, False, False)
+                if self.v_special.get():
+                    proc.gen_special_city_report(df_clean, df_dc, os.path.join(base_dir, f"{base_name}_07_单独地市_渠道.xlsx"), m_ch, False)
+                    proc.gen_special_city_report(df_clean, df_dc, os.path.join(base_dir, f"{base_name}_08_单独地市_线上.xlsx"), m_on, True)
+                    if do_retention:
+                        proc.gen_wide_retention(df_ret, os.path.join(base_dir, f"{base_name}_07_单独地市_渠道_留存版.xlsx"), m_ch_ret, False, False, True)
+                        proc.gen_wide_retention(df_ret, os.path.join(base_dir, f"{base_name}_08_单独地市_线上_留存版.xlsx"), m_on_ret, True, False, True)
 
-            if self.v_cl.get():
-                proc.gen_city_long_merged(df_clean, df_dc, df_ret, os.path.join(base_dir, f"{base_name}_04_地市一维_合并报表.xlsx"), do_retention)
-                self.log("✅ 地市一维表已生成")
+                if self.ent_d.get().strip():
+                    proc.use_special_city = self.v_special.get()
+                    use_city = self.v_cl.get() or self.v_cw.get() or self.v_special.get()
+                    target_df = df_dc if use_city else df_dp
+                    proc.gen_date_summary(target_df, self.ent_d.get(), os.path.join(base_dir, f"{base_name}_09_日期汇总.xlsx"), use_city)
 
-            if self.v_cw.get():
-                proc.gen_city_wide(df_clean, df_dc, os.path.join(base_dir, f"{base_name}_05_地市合并_渠道.xlsx"), m_ch, False)
-                proc.gen_city_wide(df_clean, df_dc, os.path.join(base_dir, f"{base_name}_06_地市合并_线上.xlsx"), m_on, True)
-                self.log("✅ 地市宽表已生成")
-                if do_retention:
-                    proc.gen_wide_retention(df_ret, os.path.join(base_dir, f"{base_name}_05_地市合并_渠道_留存版.xlsx"), m_ch_ret, False, False, False)
-                    proc.gen_wide_retention(df_ret, os.path.join(base_dir, f"{base_name}_06_地市合并_线上_留存版.xlsx"), m_on_ret, True, False, False)
-                    self.log("✅ 地市宽表[留存版] 已生成")
-
-            if self.v_special.get():
-                proc.gen_special_city_report(df_clean, df_dc, os.path.join(base_dir, f"{base_name}_07_单独地市_渠道.xlsx"), m_ch, False)
-                proc.gen_special_city_report(df_clean, df_dc, os.path.join(base_dir, f"{base_name}_08_单独地市_线上.xlsx"), m_on, True)
-                self.log("✅ 单独地市表 已生成")
-                if do_retention:
-                    proc.gen_wide_retention(df_ret, os.path.join(base_dir, f"{base_name}_07_单独地市_渠道_留存版.xlsx"), m_ch_ret, False, False, True)
-                    proc.gen_wide_retention(df_ret, os.path.join(base_dir, f"{base_name}_08_单独地市_线上_留存版.xlsx"), m_on_ret, True, False, True)
-                    self.log("✅ 单独地市表[留存版] 已生成")
-
-            if self.ent_d.get().strip():
-                proc.use_special_city = self.v_special.get()
-                use_city = self.v_cl.get() or self.v_cw.get() or self.v_special.get()
-                target_df = df_dc if use_city else df_dp
-                proc.gen_date_summary(target_df, self.ent_d.get(), os.path.join(base_dir, f"{base_name}_09_日期汇总.xlsx"), use_city)
-
-            # --- 4.2 大数据质检 ---
-            if self.v_qc.get():
-                if not df_ret.empty:
-                    qc_file = os.path.join(base_dir, f"{base_name}_10_质检分析汇总看板.xlsx")
-                    proc.gen_quality_inspection_report(df_clean, df_ret, qc_file, self.ent_q_rem.get(), self.ent_q_ch.get())
+            # ==============================
+            # 分支 B：质检报表逻辑
+            # ==============================
+            elif task_type == 'qc':
+                if df_ret.empty:
+                    self.log("❌ 无法生成质检报表：未获取到'已添加'的留存数据，请检查源表。")
                 else:
-                    self.log("❌ 无法生成质检报表：留存版数据为空，请检查源表数据！")
+                    qc_file = os.path.join(base_dir, f"{base_name}_10_质检分析汇总看板.xlsx")
+                    proc.gen_quality_inspection_report(df_clean, df_ret, qc_file, self.ent_q_rem.get(), self.ent_q_ch.get(), self.ent_q_date.get())
 
             duration = time.time() - start_time
-            self.log(f"🎉 全部完成！总耗时: {duration:.2f}秒")
-            messagebox.showinfo("成功", f"处理完成\n耗时: {duration:.2f} 秒")
+            self.log(f"🎉 任务完成！耗时: {duration:.2f}秒")
+            messagebox.showinfo("成功", f"执行完毕\n耗时: {duration:.2f} 秒")
 
         except Exception as e:
             self.log(f"❌ 错误: {e}")
             messagebox.showerror("错误", str(e))
         finally:
-            self.btn.config(state="normal", text="▶ 开始处理")
+            self.btn_regular.config(state="normal", text="📈 仅生成常规报表")
+            self.btn_qc.config(state="normal", text="🎯 仅生成质检报表")
 
 if __name__ == "__main__":
     root = tk.Tk()
