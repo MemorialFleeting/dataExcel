@@ -117,8 +117,7 @@ class UniversalProcessor:
         df['公职'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["26公职","27公职","28公职","29公职"]))
         kw_shiye = ["26事业","26三支","26社区","26辅警","26书记员","26国企","30事业","30三支","30社区","30辅警","30书记员","30国企", "27事业","27三支","27社区","27辅警","27书记员","27国企","28事业","28三支","28社区","28辅警","28书记员","28国企", "29事业","29三支","29社区","29辅警","29书记员","29国企"]
         df['事业辅助列'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, kw_shiye))
-        kw_jiaoshi = ["26教师","26特岗","26教资","30教师","30特岗","30教资","27教师","27特岗","27教资","28教师","28特岗","28教资","29教师","29特岗","29教资"]
-        df['教师'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, kw_jiaoshi))
+        df['教师'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["26教师","26特岗","26教资","30教师","30特岗","30教资","27教师","27特岗","27教资","28教师","28特岗","28教资","29教师","29特岗","29教资"]))
         df['文职'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["30文职","26文职","27文职","28文职","29文职"]))
         df['医疗'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["30医疗","26医疗","27医疗","28医疗","29医疗"]))
         df['银行'] = df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["30银行","26银行","27银行","28银行","29银行"]))
@@ -128,10 +127,7 @@ class UniversalProcessor:
         
         custom_kws = [k.strip() for k in custom_total_kws_str.replace('，', ',').split(',') if k.strip()]
         if custom_kws:
-            def check_custom_total(remark):
-                if pd.isna(remark): return 0
-                return 1 if any(kw in str(remark) for kw in custom_kws) else 0
-            df['标备总数'] = df['备注名'].apply(check_custom_total)
+            df['标备总数'] = df['备注名'].apply(lambda x: 1 if any(kw in str(x) for kw in custom_kws) else 0)
         else:
             all_cols_check = ['公职', '事业辅助列', '教师', '文职', '医疗', '银行', '考研', '学历', '其他']
             df['标备总数'] = df.apply(lambda row: 1 if any(row[c] in [1, "1"] for c in all_cols_check) else 0, axis=1)
@@ -140,36 +136,24 @@ class UniversalProcessor:
         if not date_kws: date_kws = ["FAIL_SAFE"]
         
         df['！！！是否新增'] = df['创建时间'].apply(lambda x: "是" if any(k in str(x) for k in date_kws) else "否")
-
         df['渠道'] = df['渠道活码分组'].apply(lambda x: self.excel_lookup_find(x, ["网络","社会","高校","线上","现场","线下"], ["线上平台","线下活动","高校","线上平台","考试现场","线下活动"], "其他"))
         df['线上渠道'] = df['渠道活码分组'].apply(lambda x: self.excel_lookup_find(x, ["网站","公众号","小红书","视频号","抖音"], ["网站","公众号","小红书","视频号","抖音"], "其他"))
-
         df['事业2'] = df.apply(lambda row: 1 if row['公职'] not in [1, "1"] and row['事业辅助列'] in [1, "1"] else 0, axis=1)
+        df['客户回话'] = df.apply(lambda row: "是" if (pd.notna(row['客户上次回复时间']) and str(row['客户上次回复时间']).strip() != "" and str(row['标备总数']) == "1") else "否", axis=1)
+        df['日期'] = df['好友添加时间'].apply(lambda x: f"{pd.to_datetime(x).month}月{pd.to_datetime(x).day}日" if pd.notna(x) else "")
 
-        def check_reply(row):
-            has_reply = pd.notna(row['客户上次回复时间']) and str(row['客户上次回复时间']).strip() != ""
-            return "是" if has_reply and str(row['标备总数']) == "1" else "否"
-        df['客户回话'] = df.apply(check_reply, axis=1)
+        # 核心原生字段
+        qc_fields = ['好友添加来源', '添加渠道码', '员工发送消息数', '客户回复消息数', '是否同意会话存档']
+        for c in qc_fields:
+            if c not in df.columns:
+                df[c] = 0 if '数' in c else "未知"
 
-        def fmt_date(val):
-            try: return f"{pd.to_datetime(val).month}月{pd.to_datetime(val).day}日"
-            except: return str(val)
-        df['日期'] = df['好友添加时间'].apply(fmt_date)
-
-        # 质检所需的 5 个原生字段
-        qc_required_cols = ['好友添加来源', '添加渠道码', '员工发送消息数', '客户回复消息数', '是否同意会话存档']
-        for m in qc_required_cols:
-            if m not in df.columns:
-                df[m] = 0 if '数' in m else "未知"
-
-        col_z_name = df.columns[25] if len(df.columns) > 25 else "ExternalUserId"
         if 'ExternalUserId' not in df.columns:
             df.rename(columns={df.columns[1]: 'ExternalUserId'}, inplace=True)
-            col_z_name = 'ExternalUserId'
 
         final_cols = ['备注名', 'ExternalUserId', '分校', '地市', '所属类别', '公职', '事业2', '教师', '文职', '医疗', '银行', '考研', '学历', '其他', '标备总数', '！！！是否新增', '渠道', '线上渠道', '客户回话', '日期', '添加好友状态']
         actual_cols = [c for c in final_cols if c in df.columns]
-        for f in qc_required_cols:
+        for f in qc_fields:
             if f not in actual_cols: actual_cols.append(f)
 
         df_clean = df[actual_cols].copy()
@@ -198,10 +182,9 @@ class UniversalProcessor:
         return [int(s["raw_cnt"]), int(s["dedup_cnt"]), int(s["new_add"]), to_pct(dup_rate), int(s["gz"]), int(s["sy"]), int(other), int(s["tb"]), to_pct(tb_rate), int(s["rep"]), to_pct(rep_rate)]
 
     def calc_stats_retention(self, df_subset):
-        retention_count = len(df_subset)
-        if retention_count == 0: return {"gz":0, "sy":0, "tb":0, "ret":0}
+        if len(df_subset) == 0: return {"gz":0, "sy":0, "tb":0, "ret":0}
         gz = df_subset['公职'].sum(); sy = df_subset['事业2'].sum(); tb = df_subset['标备总数'].sum()
-        return {"gz": gz, "sy": sy, "tb": tb, "ret": retention_count}
+        return {"gz": gz, "sy": sy, "tb": tb, "ret": len(df_subset)}
 
     def fmt_stats_retention(self, s, is_province_mode=False):
         def safe_div(a, b): return a / b if b != 0 else 0.0
@@ -209,110 +192,112 @@ class UniversalProcessor:
         other = s["tb"] - s["gz"] - s["sy"]; tb_rate = safe_div(s["tb"], s["ret"])
         return [int(s["ret"]), int(s["gz"]), int(s["sy"]), int(other), int(s["tb"]), to_pct(tb_rate)]
 
-    # --- ★★★ 质检模块 4.7 核心逻辑 ★★★ ---
+    # --- ★★★ 质检核心逻辑 4.8 增强版 ★★★ ---
     def gen_quality_inspection_report(self, df_clean, df_ret, output_file, remark_exclude, channel_exclude, qc_dates_str):
-        self.log(">>> 开始生成质检分析报表...")
+        self.log(">>> 开始生成 4.8 版质检分析报表...")
         base_path = os.path.splitext(output_file)[0]
         
         # --- 表 1：详情明细底稿 (不受日期限制，全量留存) ---
         df_ret.to_csv(f"{base_path}_表1_详情明细底稿.csv", index=False, encoding='utf-8-sig')
-        self.log(f"✅ 表 1 已完成，共导出 {len(df_ret)} 行。")
+        self.log(f"✅ 表 1 已完成，导出 {len(df_ret)} 行。")
 
-        # 准备受日期限制的数据池（用于表 2-6）
+        # 质检分析数据池（受日期限制）
         df_ret_qc = df_ret.copy()
         df_clean_qc = df_clean.copy()
         if qc_dates_str.strip():
             target_dates = [d.strip() for d in qc_dates_str.replace('，', ',').split(',') if d.strip()]
             df_ret_qc = df_ret_qc[df_ret_qc['日期'].isin(target_dates)]
             df_clean_qc = df_clean_qc[df_clean_qc['日期'].isin(target_dates)]
-            self.log(f"🔍 质检结果表已应用日期过滤: {target_dates}")
-
-        # 准备“虚假备注统计池”
-        df_abnormal = df_ret_qc.copy()
-        df_abnormal = df_abnormal[(df_abnormal['标备总数'] == 1) & (df_abnormal['客户回复消息数'] == 0)]
-        df_abnormal = df_abnormal[df_abnormal['好友添加来源'].astype(str).str.contains('扫描渠道二维码', na=False)]
-        if remark_exclude.strip():
-            rem_kws = [k.strip() for k in remark_exclude.replace('，', ',').split(',') if k.strip()]
-            df_abnormal = df_abnormal[~df_abnormal['备注名'].astype(str).apply(lambda x: any(k in x for k in rem_kws))]
-        if channel_exclude.strip():
-            ch_kws = [k.strip() for k in channel_exclude.replace('，', ',').split(',') if k.strip()]
-            df_abnormal = df_abnormal[~df_abnormal['添加渠道码'].astype(str).apply(lambda x: any(k in x for k in ch_kws))]
+            self.log(f"🔍 质检结果已应用日期过滤: {target_dates}")
 
         groups = {"A": ["山东分校", "广东分校", "河南分校", "河北分校", "湖北分校", "吉林分校", "山西分校", "陕西分校", "安徽分校", "辽宁分校", "云南分校"], "B": ["江苏分校", "湖南分校", "贵州分校", "四川分校", "黑龙江分校", "广西分校", "新疆分校", "浙江分校", "江西分校", "福建分校", "北京分校"], "C": ["甘肃分校", "海南分校", "内蒙古分校", "宁夏分校", "青海分校", "厦门分校", "上海分校", "天津分校", "西藏分校", "重庆分校"]}
         def safe_div(a, b): return a / b if b else 0.0
         def to_pct_int(v): return f"{int(round(v * 100))}%"
 
         with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-            # --- 表 2：虚假备注筛选 (核心条件：存档 == 同意) ---
-            df_t2_pool = df_abnormal[df_abnormal['是否同意会话存档'].astype(str).str.strip() == '同意']
+            
+            # --- 表 2：虚假备注筛选 ---
+            df_ab = df_ret_qc[(df_ret_qc['标备总数'] == 1) & (df_ret_qc['客户回复消息数'] == 0)]
+            df_ab = df_ab[df_ab['好友添加来源'].astype(str).str.contains('扫描渠道二维码', na=False)]
+            if remark_exclude.strip():
+                rem_kws = [k.strip() for k in remark_exclude.replace('，', ',').split(',') if k.strip()]
+                df_ab = df_ab[~df_ab['备注名'].astype(str).apply(lambda x: any(k in x for k in rem_kws))]
+            if channel_exclude.strip():
+                ch_kws = [k.strip() for k in channel_exclude.replace('，', ',').split(',') if k.strip()]
+                df_ab = df_ab[~df_ab['添加渠道码'].astype(str).apply(lambda x: any(k in x for k in ch_kws))]
+            
+            df_t2_pool = df_ab[df_ab['是否同意会话存档'].astype(str).str.strip() == '同意']
             rows_t2 = []; grand_t2 = 0
-            for g_name, branches in groups.items():
-                g_total = 0
-                for branch in branches:
-                    c = len(df_t2_pool[df_t2_pool['分校'] == branch])
-                    g_total += c; rows_t2.append([branch, c])
-                rows_t2.append([f"{g_name}类总计", g_total]); grand_t2 += g_total
+            for g_n, branches in groups.items():
+                gt = 0
+                for b in branches:
+                    c = len(df_t2_pool[df_t2_pool['分校'] == b]); gt += c; rows_t2.append([b, c])
+                rows_t2.append([f"{g_n}类总计", gt]); grand_t2 += gt
             rows_t2.append(["全国总计", grand_t2])
             pd.DataFrame(rows_t2, columns=['分校', '虚假备注']).to_excel(writer, sheet_name='2_虚假备注筛选', index=False)
             
-            # --- 表 3/4：跨分校 ---
-            df3_base = df_ret_qc.drop_duplicates(subset=['ExternalUserId', '分校'])
-            df3 = df3_base.groupby('ExternalUserId').size().reset_index(name='跨分校')
+            # --- 表 3/4：跨分校逻辑修正 (全量客服计数) ---
+            # 准则：跨省份分校去重后 >= 10
+            df3_base_dedup = df_ret_qc.drop_duplicates(subset=['ExternalUserId', '分校'])
+            df3 = df3_base_dedup.groupby('ExternalUserId').size().reset_index(name='跨分校')
             df3.to_csv(f"{base_path}_表3_加几个分校明细底稿.csv", index=False, encoding='utf-8-sig')
-            over10 = df3[df3['跨分校'] >= 10]['ExternalUserId']
-            df4_pool = df3_base[df3_base['ExternalUserId'].isin(over10)]
+            
+            over10_ids = df3[df3['跨分校'] >= 10]['ExternalUserId']
+            # ★ 修正点：一旦判定为异常号，从 df_ret_qc (未去重) 中统计该分校的所有客服量
+            df4_pool = df_ret_qc[df_ret_qc['ExternalUserId'].isin(over10_ids)]
             rows_t4 = []; grand_t4 = 0
-            for g_name, branches in groups.items():
-                g_total = 0
-                for branch in branches:
-                    c = len(df4_pool[df4_pool['分校'] == branch])
-                    g_total += c; rows_t4.append([branch, c])
-                rows_t4.append([f"{g_name}类总计", g_total]); grand_t4 += g_total
+            for g_n, branches in groups.items():
+                gt = 0
+                for b in branches:
+                    c = len(df4_pool[df4_pool['分校'] == b]); gt += c; rows_t4.append([b, c])
+                rows_t4.append([f"{g_n}类总计", gt]); grand_t4 += gt
             rows_t4.append(["全国总计", grand_t4])
             pd.DataFrame(rows_t4, columns=['分校', '添加客服量']).to_excel(writer, sheet_name='4_跨10个以上分校', index=False)
             
-            # --- 表 5：会话情况 ---
+            # --- 表 5：会话情况 (统计指标加同意过滤) ---
             rows_t5 = []; grand_t5 = {'ret':0, 'has':0, 'no':0, 'db':0}
-            for g_name, branches in groups.items():
+            for g_n, branches in groups.items():
                 gt = {'ret':0, 'has':0, 'no':0, 'db':0}
-                for branch in branches:
-                    grp = df_ret_qc[df_ret_qc['分校'] == branch]; ret = len(grp)
-                    has = (grp['客户回复消息数'] > 0).sum(); no = (grp['客户回复消息数'] == 0).sum()
-                    db = ((grp['员工发送消息数'] == 0) & (grp['客户回复消息数'] == 0)).sum()
+                for b in branches:
+                    grp = df_ret_qc[df_ret_qc['分校'] == b]; ret = len(grp)
+                    has = (grp['客户回复消息数'] > 0).sum()
+                    # ★ 修正点：客户0会话与双向无会话 需满足 会话存档 == 同意
+                    no = ((grp['客户回复消息数'] == 0) & (grp['是否同意会话存档'].astype(str).str.strip() == '同意')).sum()
+                    db = ((grp['员工发送消息数'] == 0) & (grp['客户回复消息数'] == 0) & (grp['是否同意会话存档'].astype(str).str.strip() == '同意')).sum()
+                    
                     gt['ret']+=ret; gt['has']+=has; gt['no']+=no; gt['db']+=db
                     grand_t5['ret']+=ret; grand_t5['has']+=has; grand_t5['no']+=no; grand_t5['db']+=db
-                    rows_t5.append([branch, ret, has, no, to_pct_int(safe_div(no, ret)), db, to_pct_int(safe_div(db, ret))])
-                rows_t5.append([f"{g_name}类总计", gt['ret'], gt['has'], gt['no'], to_pct_int(safe_div(gt['no'], gt['ret'])), gt['db'], to_pct_int(safe_div(gt['db'], gt['ret']))])
+                    rows_t5.append([b, ret, has, no, to_pct_int(safe_div(no, ret)), db, to_pct_int(safe_div(db, ret))])
+                rows_t5.append([f"{g_n}类总计", gt['ret'], gt['has'], gt['no'], to_pct_int(safe_div(gt['no'], gt['ret'])), gt['db'], to_pct_int(safe_div(gt['db'], gt['ret']))])
             rows_t5.append(["全国总计", grand_t5['ret'], grand_t5['has'], grand_t5['no'], to_pct_int(safe_div(grand_t5['no'], grand_t5['ret'])), grand_t5['db'], to_pct_int(safe_div(grand_t5['db'], grand_t5['ret']))])
             pd.DataFrame(rows_t5, columns=['分校','留存量','客户有会话','客户0会话','客户0会话率','双向无会话','双向无会话率']).to_excel(writer, sheet_name='5_会话情况', index=False)
 
             # --- 表 6：好友添加来源 ---
             srcs = ["获客助手", "名片分享", "其他", "群聊", "扫描名片二维码", "扫描渠道二维码", "搜索手机号", "微信联系人", "未知"]
             rows_t6 = []; g6 = {s: 0 for s in srcs}
-            for g_name, branches in groups.items():
+            for g_n, branches in groups.items():
                 t6 = {s: 0 for s in srcs}
-                for branch in branches:
-                    grp = df_clean_qc[df_clean_qc['分校'] == branch]
+                for b in branches:
+                    grp = df_clean_qc[df_clean_qc['分校'] == b]
                     cv = grp['好友添加来源'].fillna('未知').apply(lambda x: x if x in srcs else '其他').value_counts().to_dict()
                     bc = [cv.get(s, 0) for s in srcs]; bt = sum(bc)
                     for i, s in enumerate(srcs): t6[s]+=bc[i]; g6[s]+=bc[i]
-                    rows_t6.append([branch] + bc + [bt] + [branch] + [to_pct_int(safe_div(c, bt)) for c in bc] + [bt])
-                tc = [t6[s] for s in srcs]; tt = sum(tc)
-                rows_t6.append([f"{g_name}类总计"] + tc + [tt] + [f"{g_name}类总计"] + [to_pct_int(safe_div(c, tt)) for c in tc] + [tt])
-            gc = [g6[s] for s in srcs]; gt = sum(gc)
-            rows_t6.append(["全国总计"] + gc + [gt] + ["全国总计"] + [to_pct_int(safe_div(c, gt)) for c in gc] + [gt])
+                    rows_t6.append([b] + bc + [bt] + [b] + [to_pct_int(safe_div(c, bt)) for c in bc] + [bt])
+                tc = [t6[s] for s in srcs]; tt = sum(tc); rows_t6.append([f"{g_n}类总计"] + tc + [tt] + [f"{g_n}类总计"] + [to_pct_int(safe_div(c, tt)) for c in tc] + [tt])
+            gc = [g6[s] for s in srcs]; gt = sum(gc); rows_t6.append(["全国总计"] + gc + [gt] + ["全国总计"] + [to_pct_int(safe_div(c, gt)) for c in gc] + [gt])
             pd.DataFrame(rows_t6, columns=["分校"]+srcs+["总计"]+["分校"]+srcs+["总计"]).to_excel(writer, sheet_name='6_好友添加来源', index=False)
 
         self._style_excel(output_file)
-        self.log("🎯 质检分析综合报表已全部完成！")
+        self.log("🎯 4.8 版质检分析报表生成完毕！")
 
+    # --- 其他常规方法保持 ---
     def gen_prov_long_merged(self, df_raw, df_dedup, output_file):
         self.log(f"生成 [省份-一维]: {os.path.basename(output_file)}")
         groups = {"A": ["山东分校", "广东分校", "河南分校", "河北分校", "湖北分校", "吉林分校", "山西分校", "陕西分校", "安徽分校", "辽宁分校", "云南分校"], "B": ["江苏分校", "湖南分校", "贵州分校", "四川分校", "黑龙江分校", "广西分校", "新疆分校", "浙江分校", "江西分校", "福建分校", "北京分校"], "C": ["甘肃分校", "海南分校", "内蒙古分校", "宁夏分校", "青海分校", "厦门分校", "上海分校", "天津分校", "西藏分校", "重庆分校"]}
         sub_headers = ["新增好友", "本月分校内去重", "净新增", "重复率", "公职标备", "事业标备", "其他标备", "标备总量", "标备率", "回话备注", "回话备注率"]
         iter_list = [("线上平台", "网站", "网站"), ("线上平台", "小红书", "小红书"), ("线上平台", "公众号", "公众号"), ("线上平台", "抖音", "抖音"), ("线上平台", "视频号", "视频号"), ("线上平台", "其他", "其他"), ("线下活动", "线下活动", "线下活动"), ("考试现场", "考试现场", "考试现场"), ("高校", "高校", "高校"), ("其他", "其他", "其他")]
         final_rows = []; grand_acc = {key: {"raw_cnt":0, "dedup_cnt":0,"new_add":0,"gz":0,"sy":0,"tb":0,"rep":0} for key in [x[2] for x in iter_list]}
-        for g_name, branches in groups.items():
+        for g_n, branches in groups.items():
             g_acc = {key: {"raw_cnt":0, "dedup_cnt":0,"new_add":0,"gz":0,"sy":0,"tb":0,"rep":0} for key in [x[2] for x in iter_list]}
             for branch in branches:
                 br = df_raw[df_raw['分校'] == branch]; bd = df_dedup[df_dedup['分校'] == branch]
@@ -322,7 +307,7 @@ class UniversalProcessor:
                     stats = self.calc_stats(cr, cd)
                     for k in stats: g_acc[sn][k] += stats[k]; grand_acc[sn][k] += stats[k]
                     final_rows.append([branch, pn, sn] + self.fmt_stats(stats, True))
-            for pn, fk, sn in iter_list: final_rows.append([f"{g_name}类总计", pn, sn] + self.fmt_stats(g_acc[sn], True))
+            for pn, fk, sn in iter_list: final_rows.append([f"{g_n}类总计", pn, sn] + self.fmt_stats(g_acc[sn], True))
         for pn, fk, sn in iter_list: final_rows.append(["全国", pn, sn] + self.fmt_stats(grand_acc[sn], True))
         pd.DataFrame(final_rows, columns=["分校", "所属平台", "所属渠道"]+sub_headers).to_excel(output_file, index=False); self._style_excel(output_file)
 
@@ -518,38 +503,23 @@ class UniversalProcessor:
 # ==============================================================================
 class App:
     def __init__(self, root):
-        self.root = root
-        self.root.title("数据自动化统计工具 4.7")
-        self.root.geometry("980x520")
-        self.root.configure(bg="#f8f9fa")
-
-        style = ttk.Style()
-        style.theme_use('clam')
-        style.configure('TFrame', background="#f8f9fa")
-        style.configure('TLabelframe', background="#f8f9fa")
-        style.configure('TLabelframe.Label', font=("Microsoft YaHei", 10, "bold"), background="#f8f9fa")
+        self.root = root; self.root.title("数据自动化统计工具 4.8"); self.root.geometry("980x520"); self.root.configure(bg="#f8f9fa")
+        style = ttk.Style(); style.theme_use('clam')
+        style.configure('TFrame', background="#f8f9fa"); style.configure('TLabelframe', background="#f8f9fa"); style.configure('TLabelframe.Label', font=("Microsoft YaHei", 10, "bold"), background="#f8f9fa")
         style.configure('TButton', font=("Microsoft YaHei", 10), background="#007bff", foreground="white")
         style.configure('TNotebook.Tab', font=("Microsoft YaHei", 10, "bold"), padding=[15, 5])
-
-        tk.Label(root, text="🚀 数据自动化统计工具 4.7", font=("Microsoft YaHei", 15, "bold"), bg="#007bff", fg="white").pack(fill="x", ipady=10)
-
-        main_frame = tk.Frame(root, bg="#f8f9fa")
-        main_frame.pack(fill="both", expand=True, padx=15, pady=10)
-
+        tk.Label(root, text="🚀 数据自动化统计工具 4.8", font=("Microsoft YaHei", 15, "bold"), bg="#007bff", fg="white").pack(fill="x", pady=0, ipady=10)
+        main_frame = tk.Frame(root, bg="#f8f9fa"); main_frame.pack(fill="both", expand=True, padx=15, pady=10)
         left_frame = tk.Frame(main_frame, bg="#f8f9fa"); left_frame.pack(side="left", fill="both", expand=True)
         right_frame = tk.Frame(main_frame, bg="#f8f9fa", width=350); right_frame.pack(side="right", fill="y", padx=(15, 0)); right_frame.pack_propagate(False)
-
         self.notebook = ttk.Notebook(left_frame); self.notebook.pack(fill="both", expand=True)
         tab_import = ttk.Frame(self.notebook); tab_regular = ttk.Frame(self.notebook); tab_qc = ttk.Frame(self.notebook)
         self.notebook.add(tab_import, text=" 📂 数据源导入 "); self.notebook.add(tab_regular, text=" 📈 常规报表 "); self.notebook.add(tab_qc, text=" 📊 质检数据分析 ")
 
-        # 标签 1：导入
         s1f = ttk.LabelFrame(tab_import, text=" 步骤 1：导入数据 "); s1f.pack(fill="x", pady=20, padx=15, ipady=15)
-        f_file = ttk.Frame(s1f); f_file.pack(fill="x", padx=15)
-        self.ent_f = ttk.Entry(f_file); self.ent_f.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        f_file = ttk.Frame(s1f); f_file.pack(fill="x", padx=15); self.ent_f = ttk.Entry(f_file); self.ent_f.pack(side="left", fill="x", expand=True, padx=(0, 10))
         ttk.Button(f_file, text="📂 浏览文件", command=self.browse, width=12).pack(side="right")
 
-        # 标签 2：常规
         s2f = ttk.LabelFrame(tab_regular, text=" 步骤 2：参数设置 "); s2f.pack(fill="x", pady=10, padx=10)
         f_p1 = ttk.Frame(s2f); f_p1.pack(fill="x", padx=10, pady=5)
         ttk.Label(f_p1, text="📅 判断月份:").pack(side="left"); self.ent_m = ttk.Entry(f_p1, width=15); self.ent_m.insert(0, "2026-01"); self.ent_m.pack(side="left", padx=10)
@@ -563,20 +533,17 @@ class App:
         ttk.Checkbutton(grid_f, text="★ 单独地市", variable=self.v_special).grid(row=2, column=0, columnspan=2, sticky="w", pady=5)
         self.btn_regular = ttk.Button(tab_regular, text="📈 仅生成常规报表", command=lambda: self.run('regular')); self.btn_regular.pack(side="bottom", fill="x", pady=10, padx=15, ipady=8)
 
-        # 标签 3：质检
-        s4f = ttk.LabelFrame(tab_qc, text=" 质检专属配置 (表1全量明细，表2按'同意'过滤) "); s4f.pack(fill="both", expand=True, pady=10, padx=10)
+        s4f = ttk.LabelFrame(tab_qc, text=" 质检专属配置 (表4全量计，表5统计加存档过滤) "); s4f.pack(fill="both", expand=True, pady=10, padx=10)
         f_q0 = ttk.Frame(s4f); f_q0.pack(fill="x", padx=15, pady=8); ttk.Label(f_q0, text="📆 独立过滤日期:").pack(side="left"); self.ent_q_date = ttk.Entry(f_q0); self.ent_q_date.pack(side="left", fill="x", expand=True, padx=5)
-        f_q1 = ttk.Frame(s4f); f_q1.pack(fill="x", padx=15, pady=8); ttk.Label(f_q1, text="🚫 备注排除:").pack(side="left"); self.ent_q_rem = ttk.Entry(f_q1); self.ent_q_rem.insert(0, "学26,学27,报26,课26,前台"); self.ent_q_rem.pack(side="left", fill="x", expand=True, padx=5)
-        f_q2 = ttk.Frame(s4f); f_q2.pack(fill="x", padx=15, pady=8); ttk.Label(f_q2, text="🚫 渠道排除:").pack(side="left"); self.ent_q_ch = ttk.Entry(f_q2); self.ent_q_ch.insert(0, "前台"); self.ent_q_ch.pack(side="left", fill="x", expand=True, padx=5)
+        f_q1 = ttk.Frame(s4f); f_q1.pack(fill="x", padx=15, pady=8); ttk.Label(f_q1, text="🚫 备注排除:").pack(side="left"); self.ent_q_rem = ttk.Entry(f_q1); self.ent_q_rem.insert(0, "学26,学27,报26,课26,前台,到店,报27,课27"); self.ent_q_rem.pack(side="left", fill="x", expand=True, padx=5)
+        f_q2 = ttk.Frame(s4f); f_q2.pack(fill="x", padx=15, pady=8); ttk.Label(f_q2, text="🚫 渠道排除:").pack(side="left"); self.ent_q_ch = ttk.Entry(f_q2); self.ent_q_ch.insert(0, "前台,到店"); self.ent_q_ch.pack(side="left", fill="x", expand=True, padx=5)
         self.btn_qc = ttk.Button(tab_qc, text="🎯 仅生成质检报表", command=lambda: self.run('qc')); self.btn_qc.pack(side="bottom", fill="x", pady=10, padx=15, ipady=8)
 
-        # 日志
         l_lbl_f = ttk.LabelFrame(right_frame, text=" 实时运行日志 "); l_lbl_f.pack(fill="both", expand=True)
         self.log_txt = scrolledtext.ScrolledText(l_lbl_f, font=("Consolas", 9), bg="#1e1e1e", fg="#d4d4d4", relief="flat"); self.log_txt.pack(fill="both", expand=True, padx=2, pady=2)
 
     def log(self, msg):
-        self.log_txt.config(state='normal'); self.log_txt.insert(tk.END, f"[{time.strftime('%H:%M:%S')}] {msg}\n"); self.log_txt.see(tk.END); self.log_txt.config(state='disabled')
-        self.root.update_idletasks()
+        self.log_txt.config(state='normal'); self.log_txt.insert(tk.END, f"[{time.strftime('%H:%M:%S')}] {msg}\n"); self.log_txt.see(tk.END); self.log_txt.config(state='disabled'); self.root.update_idletasks()
 
     def browse(self):
         fs = filedialog.askopenfilenames(filetypes=[("Excel/CSV", "*.xlsx *.xls *.csv")]); 
@@ -597,7 +564,6 @@ class App:
                 else: dfs.append(pd.read_excel(f.strip()))
             full_df = pd.concat(dfs, ignore_index=True)
             self.log(f"读取完成，共计 {len(full_df)} 行数据。")
-            
             df_clean, df_dp, df_dc, df_ret = proc.process_step1(full_df, self.ent_m.get(), "")
             base_dir = os.path.dirname(files[0]); base_name = os.path.splitext(os.path.basename(files[0]))[0]
 
