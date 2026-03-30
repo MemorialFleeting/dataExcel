@@ -1046,7 +1046,7 @@ class App:
         ui_style.theme_use('clam')
         ui_style.configure('TNotebook.Tab', font=("Microsoft YaHei", 10, "bold"), padding=[15, 5])
         
-        tk.Label(root, text="🚀 数据自动化统计工具 6.0 (终极全量无损版)", font=("Microsoft YaHei", 15, "bold"), bg="#007bff", fg="white").pack(fill="x", pady=0, ipady=10)
+        tk.Label(root, text="🚀 数据自动化统计工具 6.1 (终极全量无损版)", font=("Microsoft YaHei", 15, "bold"), bg="#007bff", fg="white").pack(fill="x", pady=0, ipady=10)
         
         main_container = tk.Frame(root, bg="#f8f9fa")
         main_container.pack(fill="both", expand=True, padx=15, pady=10)
