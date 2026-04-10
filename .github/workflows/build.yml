@@ -23,7 +23,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        pip install pandas openpyxl pyinstaller
+        pip install pandas openpyxl pyinstaller PyQt5 requests beautifulsoup4 chardet
         # 如果你的界面用了额外的库，也要在这里安装
 
     - name: Build with PyInstaller
