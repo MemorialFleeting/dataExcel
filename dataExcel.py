@@ -1,168 +1,429 @@
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
-import pandas as pd
-import threading
+import sys
 import os
-import datetime
+import time
+import re
+import chardet
+import requests
+import pandas as pd
+from datetime import datetime
+from urllib.parse import urlparse
+from bs4 import BeautifulSoup
 
-class CSVSplitterApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("超大 CSV 分校拆分工具")
-        self.root.geometry("850x600")
-        self.root.configure(padx=10, pady=10)
-        
-        # 默认分校数据 (使用英文逗号)
-        self.default_groups = [
-            "山东分校,广东分校,河南分校,河北分校,湖北分校",
-            "吉林分校,山西分校,陕西分校,安徽分校,辽宁分校,云南分校",
-            "江苏分校,湖南分校,四川分校,黑龙江分校,广西分校,新疆分校,浙江分校,江西分校,北京分校,内蒙古分校",
-            "贵州分校,福建分校,甘肃分校,海南分校,宁夏分校,青海分校,厦门分校,上海分校,天津分校,西藏分校,重庆分校"
-        ]
-        
-        self.text_inputs = []
-        self.file_path = tk.StringVar()
-        
-        self.create_widgets()
+from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, 
+                             QPushButton, QLabel, QTextEdit, QFileDialog, QMessageBox, QFrame)
+from PyQt5.QtCore import QThread, pyqtSignal, Qt
+from PyQt5.QtGui import QFont, QTextCursor
 
-    def create_widgets(self):
-        # 使用 PanedWindow 实现左右分栏
-        paned_window = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
-        paned_window.pack(fill=tk.BOTH, expand=True)
+# =========================================================
+# 后台工作线程（处理网络请求，防止UI假死）
+# =========================================================
+class CheckerThread(QThread):
+    log_signal = pyqtSignal(str)          
+    progress_signal = pyqtSignal(int)     
+    finished_signal = pyqtSignal(list)    
 
-        # ================= 左侧：操作区 =================
-        left_frame = ttk.Frame(paned_window, padding=(10, 0, 10, 0))
-        paned_window.add(left_frame, weight=3)
+    def __init__(self, sites_data):
+        super().__init__()
+        self.sites_data = sites_data
+        self.is_running = True
 
-        # 1. 规则输入区
-        ttk.Label(left_frame, text="分校配置 (请务必使用 英文逗号 隔开):", font=("微软雅黑", 10, "bold")).pack(pady=(0, 10), anchor="w")
-        
-        for i in range(4):
-            frame = ttk.Frame(left_frame)
-            frame.pack(fill="x", pady=5)
-            ttk.Label(frame, text=f"表 {i+1}:", width=5).pack(side="left", anchor="n", pady=2)
+    def detect_encoding(self, content):
+        try:
+            result = chardet.detect(content)
+            encoding = result['encoding']
+            confidence = result['confidence']
+            if confidence < 0.7:
+                for enc in ['utf-8', 'gbk', 'gb2312', 'iso-8859-1']:
+                    try:
+                        content.decode(enc)
+                        return enc
+                    except:
+                        continue
+                return 'utf-8'
+            return encoding if encoding else 'utf-8'
+        except:
+            return 'utf-8'
+
+    def extract_title_and_domain(self, html_content, original_url):
+        if not original_url.startswith(('http://', 'https://')):
+            original_url = 'http://' + original_url
+        domain = urlparse(original_url).netloc
+
+        title = "无法获取标题"
+        try:
+            encoding = self.detect_encoding(html_content)
+            try:
+                decoded_content = html_content.decode(encoding, errors='ignore')
+            except:
+                decoded_content = html_content.decode('utf-8', errors='ignore')
+
+            soup = BeautifulSoup(decoded_content, 'html.parser')
+            if soup.title and soup.title.string:
+                title = soup.title.get_text(strip=True)
+                if not title:
+                    title = "标题为空"
+        except Exception as e:
+            title = f"解析异常"
             
-            # 使用 tk.Text 以支持多行，但应用更清爽的边框
-            text_box = tk.Text(frame, height=3, width=40, font=("微软雅黑", 9), relief="solid", borderwidth=1)
-            text_box.insert("1.0", self.default_groups[i])
-            text_box.pack(side="left", fill="x", expand=True, padx=(5, 0))
-            self.text_inputs.append(text_box)
+        return title, domain
 
-        # 2. 文件选择区
-        file_frame = ttk.Frame(left_frame)
-        file_frame.pack(fill="x", pady=20)
-        
-        self.select_btn = ttk.Button(file_frame, text="1. 选择 CSV 源文件", command=self.select_file)
-        self.select_btn.pack(side="left")
-        
-        ttk.Entry(file_frame, textvariable=self.file_path, state="readonly").pack(side="left", fill="x", expand=True, padx=(10, 0))
-
-        # 3. 操作区
-        self.process_btn = ttk.Button(left_frame, text="2. 开始自动拆分", command=self.start_processing)
-        self.process_btn.pack(fill="x", pady=10, ipady=5)
-
-        # ================= 右侧：日志区 =================
-        right_frame = ttk.Frame(paned_window, padding=(10, 0, 0, 0))
-        paned_window.add(right_frame, weight=2)
-
-        ttk.Label(right_frame, text="运行记录:", font=("微软雅黑", 10, "bold")).pack(anchor="w", pady=(0, 5))
-        
-        # 日志文本框与滚动条
-        log_scroll = ttk.Scrollbar(right_frame)
-        log_scroll.pack(side="right", fill="y")
-        
-        self.log_text = tk.Text(right_frame, font=("Consolas", 9), bg="#f4f4f4", yscrollcommand=log_scroll.set, state="disabled")
-        self.log_text.pack(side="left", fill="both", expand=True)
-        log_scroll.config(command=self.log_text.yview)
-        
-        self.log_message("系统初始化完成。等待选择文件...")
-
-    def log_message(self, message):
-        """向右侧日志区添加带时间戳的记录"""
-        now = datetime.datetime.now().strftime("%H:%M:%S")
-        self.log_text.config(state="normal")
-        self.log_text.insert(tk.END, f"[{now}] {message}\n")
-        self.log_text.see(tk.END) # 自动滚动到最新
-        self.log_text.config(state="disabled")
-
-    def select_file(self):
-        path = filedialog.askopenfilename(filetypes=[("CSV 数据文件", "*.csv")])
-        if path:
-            self.file_path.set(path)
-            self.log_message(f"已选择源文件: {os.path.basename(path)}")
-            self.log_message(f"保存目录默认设为: {os.path.dirname(path)}")
-
-    def parse_input(self, text):
-        # 强制将可能误输入的中文逗号替换为英文逗号，增加容错率
-        text = text.replace('，', ',').replace('\n', ',')
-        return [s.strip() for s in text.split(',') if s.strip()]
-
-    def start_processing(self):
-        if not self.file_path.get():
-            messagebox.showwarning("提示", "请先选择 CSV 源文件！")
-            return
-        
-        self.process_btn.config(state="disabled", text="处理中...")
-        self.select_btn.config(state="disabled")
-        
-        # 开启新线程处理
-        threading.Thread(target=self.process_csv).start()
-
-    def process_csv(self):
-        start_time = datetime.datetime.now()
-        self.log_message("-" * 30)
-        self.log_message("任务开始！正在读取巨型 CSV 文件...")
+    def check_website(self, url):
+        if not url.startswith(('http://', 'https://')):
+            url = 'http://' + url
+            
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Connection': 'keep-alive'
+        }
         
         try:
-            file_path = self.file_path.get()
-            output_dir = os.path.dirname(file_path) # 默认保存在源文件同目录
-            
-            # 读取 CSV
-            df = pd.read_csv(file_path, low_memory=False)
-
-            if len(df.columns) < 3:
-                raise ValueError("表格列数不足 3 列，无法按照第三列拆分！")
-            
-            target_col = df.columns[2]
-            self.log_message(f"成功加载数据，共 {len(df)} 行。")
-            self.log_message(f"依据第 3 列 [{target_col}] 进行拆分...")
-
-            # 获取用户输入的分组规则
-            groups = [self.parse_input(box.get("1.0", tk.END)) for box in self.text_inputs]
-
-            # 开始切分并保存
-            for i, group_schools in enumerate(groups):
-                filtered_df = df[df[target_col].isin(group_schools)]
+            response = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
+            if response.status_code == 200:
+                title, domain = self.extract_title_and_domain(response.content, response.url)
+            else:
+                title = ""
+                domain = urlparse(response.url).netloc
                 
-                if not filtered_df.empty:
-                    out_name = f"表{i+1}_切分结果.csv"
-                    out_path = os.path.join(output_dir, out_name)
-                    # 使用 utf-8-sig 编码，确保用 Excel 打开 CSV 时不会乱码
-                    filtered_df.to_csv(out_path, index=False, encoding='utf-8-sig')
-                    self.log_message(f"✔ 生成: {out_name} (匹配到 {len(filtered_df)} 条数据)")
+            return {
+                'accessible': response.status_code == 200,
+                'title': title,
+                'domain': domain
+            }
+        except requests.exceptions.RequestException as e:
+            return {
+                'accessible': False,
+                'title': '',
+                'domain': urlparse(url).netloc if urlparse(url).netloc else url
+            }
+
+    def run(self):
+        results = []
+        total = len(self.sites_data)
+        
+        self.log_signal.emit(f"=== 开始执行检查，共计 {total} 条任务 ===")
+        
+        for i, site in enumerate(self.sites_data, 1):
+            if not self.is_running:
+                self.log_signal.emit("已手动终止检查。")
+                break
+                
+            name = site.get('name', '未知')
+            link = site.get('link', '')
+            
+            self.log_signal.emit(f"[{i}/{total}] 正在检查: {name}...")
+            
+            result_data = self.check_website(link)
+            
+            record = {
+                '标题': name,
+                '地址': link,
+                '是否能打开': '是' if result_data['accessible'] else '否',
+                '网页标题': result_data['title'],
+                '网页地址': result_data['domain']
+            }
+            results.append(record)
+            
+            if result_data['accessible']:
+                self.log_signal.emit(f"  ✓ 可打开 | 域名: {result_data['domain']} | 标题: {result_data['title']}")
+            else:
+                self.log_signal.emit(f"  ✗ 无法打开 | {link}")
+                
+            self.progress_signal.emit(i)
+            
+            if i < total:
+                time.sleep(1)
+                
+        self.log_signal.emit("=== 所有检查任务执行完毕 ===")
+        self.finished_signal.emit(results)
+
+    def stop(self):
+        self.is_running = False
+
+
+# =========================================================
+# 主界面 UI 
+# =========================================================
+class WebsiteCheckerUI(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.sites_data = []  
+        self.output_dir = ""  # 用于存储自动保存的目录路径
+        self.checker_thread = None
+        self.init_ui()
+
+    def init_ui(self):
+        self.setWindowTitle('网站可访问性批量检查工具 V1.2')
+        self.resize(900, 600)
+        
+        # 全局字体和背景色
+        self.setStyleSheet("""
+            QWidget { 
+                font-family: 'Microsoft YaHei'; 
+                font-size: 10pt; 
+                background-color: #f4f6f9;
+            }
+        """)
+
+        main_layout = QHBoxLayout()
+        main_layout.setContentsMargins(15, 15, 15, 15)
+        main_layout.setSpacing(15)
+
+        # ================= 左侧操作区 (卡片式美化) =================
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setAlignment(Qt.AlignTop)
+        left_layout.setSpacing(20)
+
+        # 1. 操作说明卡片
+        instruction_frame = QFrame()
+        instruction_frame.setStyleSheet("""
+            QFrame {
+                background-color: #ffffff;
+                border: 1px solid #e0e6ed;
+                border-radius: 10px;
+            }
+            QLabel {
+                color: #34495e;
+                line-height: 1.6;
+                padding: 5px;
+            }
+        """)
+        instruction_layout = QVBoxLayout(instruction_frame)
+        instruction_label = QLabel(
+            "<span style='font-size:12pt; font-weight:bold; color:#2c3e50;'>✨ 操作说明</span><br><br>"
+            "1. 点击 <b>选择表格</b> 导入本地文件。<br>"
+            "   <span style='color:#7f8c8d; font-size:9pt;'>* 支持 .csv, .xls, .xlsx，可多选。</span><br>"
+            "2. 表格要求：第一列为标题，第二列为链接。<br>"
+            "   <span style='color:#7f8c8d; font-size:9pt;'>* 程序会自动忽略表头和空行。</span><br>"
+            "3. 点击 <b>开始检查</b>，右侧将显示进度日志。<br>"
+            "4. 检查完成后，结果会 <b>自动保存</b> 到导入文件<br>所在的同一目录下。"
+        )
+        instruction_label.setWordWrap(True)
+        instruction_layout.addWidget(instruction_label)
+        left_layout.addWidget(instruction_frame)
+
+        # 2. 状态提示框
+        self.status_label = QLabel("🎯 当前未选择任何文件。\n待处理网站数量：0")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setStyleSheet("""
+            QLabel {
+                background-color: #e3f2fd;
+                color: #1565c0;
+                font-weight: bold;
+                padding: 15px;
+                border-radius: 8px;
+                border: 1px dashed #90caf9;
+            }
+        """)
+        left_layout.addWidget(self.status_label)
+
+        # 3. 按钮组
+        button_style = """
+            QPushButton {
+                border: none;
+                border-radius: 8px;
+                padding: 12px;
+                font-size: 11pt;
+                font-weight: bold;
+            }
+        """
+        
+        # 选择文件按钮 (科技蓝)
+        self.btn_select = QPushButton("📁 1. 选择本地表格文件")
+        self.btn_select.setStyleSheet(button_style + """
+            QPushButton { background-color: #3498db; color: white; }
+            QPushButton:hover { background-color: #2980b9; }
+            QPushButton:pressed { background-color: #1f618d; }
+            QPushButton:disabled { background-color: #bdc3c7; color: #ecf0f1; }
+        """)
+        self.btn_select.clicked.connect(self.select_files)
+        left_layout.addWidget(self.btn_select)
+
+        # 开始检查按钮 (活力绿)
+        self.btn_start = QPushButton("🚀 2. 开始检查并导出")
+        self.btn_start.setStyleSheet(button_style + """
+            QPushButton { background-color: #2ecc71; color: white; }
+            QPushButton:hover { background-color: #27ae60; }
+            QPushButton:pressed { background-color: #1e8449; }
+            QPushButton:disabled { background-color: #bdc3c7; color: #ecf0f1; }
+        """)
+        self.btn_start.clicked.connect(self.start_checking)
+        self.btn_start.setEnabled(False)
+        left_layout.addWidget(self.btn_start)
+        
+        left_layout.addStretch() # 把上面内容往上顶
+
+        # ================= 右侧日志区 =================
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        
+        log_label = QLabel("<b>📝 执行日志</b>")
+        log_label.setStyleSheet("color: #2c3e50; font-size: 11pt;")
+        
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setStyleSheet("""
+            QTextEdit {
+                background-color: #1e1e1e; 
+                color: #00ff00; 
+                font-family: Consolas, 'Microsoft YaHei'; 
+                border-radius: 8px;
+                padding: 10px;
+                font-size: 10pt;
+            }
+        """)
+        
+        right_layout.addWidget(log_label)
+        right_layout.addWidget(self.log_text)
+
+        # 将左右布局加入主布局，设置比例 1:2
+        main_layout.addWidget(left_widget, 1)
+        main_layout.addWidget(right_widget, 2)
+        
+        self.setLayout(main_layout)
+
+    def append_log(self, text):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.log_text.append(f"[{timestamp}] {text}")
+        self.log_text.moveCursor(QTextCursor.End)
+
+    def select_files(self):
+        files, _ = QFileDialog.getOpenFileNames(
+            self, 
+            "选择表格文件", 
+            "", 
+            "表格文件 (*.xlsx *.xls *.csv)"
+        )
+        
+        if not files:
+            return
+
+        # 获取第一个文件的所在目录，作为后续的自动保存路径
+        self.output_dir = os.path.dirname(files[0])
+
+        self.sites_data.clear()
+        self.append_log(f"选中了 {len(files)} 个文件，正在读取数据...")
+
+        for file in files:
+            try:
+                if file.endswith('.csv'):
+                    try:
+                        df = pd.read_csv(file, encoding='utf-8')
+                    except UnicodeDecodeError:
+                        df = pd.read_csv(file, encoding='gbk')
                 else:
-                    self.log_message(f"⚠ 表{i+1}: 未匹配到任何对应分校的数据，跳过生成。")
+                    df = pd.read_excel(file)
 
-            end_time = datetime.datetime.now()
-            cost_time = (end_time - start_time).seconds
-            self.log_message(f"任务结束！总耗时: {cost_time} 秒。")
-            self.log_message("-" * 30)
-            
-            self.root.after(0, self.processing_complete, "拆分成功！文件已保存在源文件同级目录下。")
-            
-        except Exception as e:
-            self.log_message(f"❌ 发生错误: {str(e)}")
-            self.root.after(0, self.processing_complete, f"处理失败，请查看右侧日志。", error=True)
+                if df.shape[1] < 2:
+                    self.append_log(f"⚠️ 文件 {os.path.basename(file)} 列数不足两列，跳过。")
+                    continue
 
-    def processing_complete(self, message, error=False):
-        self.process_btn.config(state="normal", text="2. 开始自动拆分")
-        self.select_btn.config(state="normal")
-        if error:
-            messagebox.showerror("错误", message)
+                count = 0
+                for index, row in df.iterrows():
+                    name = str(row.iloc[0]).strip()
+                    link = str(row.iloc[1]).strip()
+                    
+                    if not link or link.lower() == 'nan' or name.lower() == 'nan':
+                        continue
+                        
+                    self.sites_data.append({'name': name, 'link': link})
+                    count += 1
+                
+                self.append_log(f"成功从 {os.path.basename(file)} 读取 {count} 条数据。")
+
+            except Exception as e:
+                self.append_log(f"❌ 读取文件 {os.path.basename(file)} 失败: {str(e)}")
+
+        total_sites = len(self.sites_data)
+        self.status_label.setText(f"🎯 提取成功！\n共提取网站：{total_sites} 条")
+        self.status_label.setStyleSheet("""
+            QLabel {
+                background-color: #e8f5e9;
+                color: #2e7d32;
+                font-weight: bold;
+                padding: 15px;
+                border-radius: 8px;
+                border: 1px dashed #81c784;
+            }
+        """)
+        
+        if total_sites > 0:
+            self.btn_start.setEnabled(True)
+            self.append_log(f"--- 准备就绪，点击【开始检查】启动任务 ---")
         else:
-            messagebox.showinfo("完成", message)
+            self.btn_start.setEnabled(False)
 
-if __name__ == "__main__":
-    root = tk.Tk()
-    app = CSVSplitterApp(root)
-    root.mainloop()
+    def start_checking(self):
+        if not self.sites_data:
+            return
+
+        self.btn_select.setEnabled(False)
+        self.btn_start.setEnabled(False)
+        self.btn_start.setText("⏳ 检查进行中...")
+
+        self.log_text.clear()
+
+        self.checker_thread = CheckerThread(self.sites_data)
+        self.checker_thread.log_signal.connect(self.append_log)
+        self.checker_thread.finished_signal.connect(self.export_results)
+        self.checker_thread.start()
+
+    def export_results(self, results):
+        self.append_log("正在自动生成 Excel 文件...")
+        
+        if not results:
+            self.append_log("没有生成任何结果！")
+            self.reset_ui()
+            return
+
+        # 构造自动保存的完整路径
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_name = f"网站检查结果_{timestamp}.xlsx"
+        save_path = os.path.join(self.output_dir, file_name)
+
+        try:
+            # 转换成 DataFrame 并导出到 Excel
+            df = pd.DataFrame(results)
+            columns_order = ['标题', '地址', '是否能打开', '网页标题', '网页地址']
+            df = df[columns_order]
+            
+            df.to_excel(save_path, index=False, engine='openpyxl')
+            self.append_log(f"🎉 导出成功！\n文件已自动保存在:\n{save_path}")
+            
+            # 弹窗提示，并询问是否要打开该文件夹
+            reply = QMessageBox.information(
+                self, 
+                "任务完成", 
+                f"检查任务已完成！\n结果已自动保存至：\n{save_path}\n\n是否立即打开所在文件夹？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            )
+            
+            # 如果用户点击“是”，自动打开对应的文件夹
+            if reply == QMessageBox.Yes:
+                # 兼容 Windows 系统的路径打开方式
+                os.startfile(self.output_dir)
+                
+        except Exception as e:
+            self.append_log(f"❌ 自动导出失败: {str(e)}")
+            QMessageBox.critical(self, "错误", f"保存文件时出错:\n{str(e)}\n\n请检查文件是否被其他程序占用。")
+
+        self.reset_ui()
+
+    def reset_ui(self):
+        self.btn_select.setEnabled(True)
+        self.btn_start.setEnabled(True)
+        self.btn_start.setText("🚀 2. 开始检查并导出")
+
+    def closeEvent(self, event):
+        if self.checker_thread and self.checker_thread.isRunning():
+            self.checker_thread.stop()
+            self.checker_thread.wait()
+        event.accept()
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    window = WebsiteCheckerUI()
+    window.show()
+    sys.exit(app.exec_())
