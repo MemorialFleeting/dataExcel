@@ -272,7 +272,7 @@ class ExcelInspectorApp:
             
             dir_name = os.path.dirname(path)
             base_name = os.path.basename(path)
-            new_name = base_name.replace(".xlsx", "_精简巡检结果.xlsx")
+            new_name = base_name.replace(".xlsx", "_结果.xlsx")
             save_path = os.path.join(dir_name, new_name)
             
             final_df.to_excel(save_path, index=False)
@@ -281,7 +281,7 @@ class ExcelInspectorApp:
             self.log(f"🎉 巡检全部完成！")
             self.log(f"💾 结果文件已保存至：{save_path}")
             
-            self.root.after(0, lambda: messagebox.showinfo("任务完成", f"巡检已完成！\n精简版结果已保存为：\n{new_name}"))
+            self.root.after(0, lambda: messagebox.showinfo("任务完成", f"巡检已完成！\n结果已保存为：\n{new_name}"))
 
         except Exception as e:
             self.log(f"❌ [代码异常] {str(e)}")
