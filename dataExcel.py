@@ -10,7 +10,7 @@ import re
 import urllib3
 import os
 import time
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 # 忽略不安全的SSL警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -22,7 +22,7 @@ ctk.set_default_color_theme("blue")
 class ExcelInspectorApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("数据源表质量巡检工具 v3.0")
+        self.root.title("数据源表质量巡检工具 v4.5 (含链接智联版阅读器)")
         self.root.geometry("1000x650")
         
         self.file_path = ""
@@ -31,7 +31,6 @@ class ExcelInspectorApp:
         self.setup_ui()
 
     def setup_ui(self):
-        # 整体分左右布局
         self.root.grid_columnconfigure(1, weight=1)
         self.root.grid_rowconfigure(0, weight=1)
 
@@ -79,7 +78,7 @@ class ExcelInspectorApp:
         self.log_area.pack(fill="both", expand=True)
         self.log_area.configure(state="disabled")
 
-    def log(self, message, color="#00FF00"):
+    def log(self, message):
         def append():
             self.log_area.configure(state="normal")
             time_str = time.strftime("[%H:%M:%S] ")
@@ -119,10 +118,127 @@ class ExcelInspectorApp:
         self.log_area.configure(state="disabled")
         
         self.log("="*40)
-        self.log("🚀 开始巡检任务 (包含首页Title获取)")
+        self.log("🚀 开始巡检任务")
         self.log("="*40)
         
         threading.Thread(target=self.process_excel, args=(self.file_path, keywords, min_words), daemon=True).start()
+
+    def generate_html_reader(self, save_path, html_data_list):
+        """生成带超链接追踪的沉浸式 HTML 阅读器"""
+        json_data = json.dumps(html_data_list, ensure_ascii=False)
+        
+        # 包含了用户修改的样式 br{display:none} 等
+        html_template = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>沉浸式正文阅读器</title>
+    <style>
+        body {{ margin: 0; padding: 0; background-color: #F4F6F8; font-family: 'Microsoft YaHei', sans-serif; color: #333; }}
+        .header {{ position: fixed; top: 0; width: 100%; background: #fff; box-shadow: 0 2px 10px rgba(0,0,0,0.05); display: flex; justify-content: space-between; align-items: center; padding: 10px 30px; box-sizing: border-box; z-index: 1000; }}
+        .progress-box {{ font-size: 16px; font-weight: bold; color: #2FA572; }}
+        .jump-box input {{ width: 50px; text-align: center; padding: 4px; border: 1px solid #ddd; border-radius: 4px; outline: none; margin: 0 5px; }}
+        .jump-box button {{ padding: 5px 10px; background: #2FA572; color: #fff; border: none; border-radius: 4px; cursor: pointer; }}
+        .jump-box button:hover {{ background: #1F7A54; }}
+        .result-badge {{ padding: 6px 12px; border-radius: 20px; font-size: 14px; font-weight: bold; color: #fff; max-width: 400px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+        
+        .container {{ max-width: 90%; margin: 80px auto 40px auto; background: #fff; padding: 40px 50px; box-shadow: 0 4px 20px rgba(0,0,0,0.05); border-radius: 8px; min-height: 70vh; }}
+        
+        /* 来源、列表、正文跳转信息栏 */
+        .article-info {{ font-size: 13px; color: #666; margin-bottom: 20px; text-align: center; background: #f9f9f9; padding: 10px; border-radius: 6px; border: 1px dashed #ccc; }}
+        .article-info a {{ color: #2FA572; text-decoration: none; margin: 0 8px; font-weight: bold; }}
+        .article-info a:hover {{ text-decoration: underline; color: #1F7A54; }}
+        
+        .article-title {{ font-size: 22px; font-weight: bold; text-align: center; margin-bottom: 25px; color: #222; line-height: 1.4; }}
+        
+        /* 用户自定义排版样式 */
+        .article-content {{ font-size: 14px; line-height: 1.4; color: #444; white-space: pre-wrap; word-wrap: break-word; }}
+        br {{ display: none; }}
+        
+        .tips {{ text-align: center; color: #999; font-size: 13px; margin-top: 20px; }}
+        kbd {{ background-color: #eee; border-radius: 3px; border: 1px solid #b4b4b4; box-shadow: 0 1px 1px rgba(0,0,0,.2); color: #333; display: inline-block; font-size: .85em; font-weight: 700; line-height: 1; padding: 2px 4px; white-space: nowrap; }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="progress-box">当前: <span id="current-idx">1</span> / <span id="total-idx">?</span> 篇</div>
+        <div class="jump-box">
+            跳转至 <input type="number" id="jump-input" min="1" value="1"> 
+            <button onclick="jump()">GO</button>
+        </div>
+        <div id="result-badge" class="result-badge">状态加载中...</div>
+    </div>
+
+    <div class="container">
+        <!-- 包含三个跳转链接的信息栏 -->
+        <div class="article-info" id="article-info">链接加载中...</div>
+        
+        <div class="article-title" id="article-title">标题加载中...</div>
+        <div class="article-content" id="article-content">正文加载中...</div>
+    </div>
+    
+    <div class="tips">操作提示：按键盘 <kbd>←</kbd> 上一篇 ， 按 <kbd>→</kbd> 下一篇</div>
+
+    <script>
+        const articles = {json_data};
+        let currentIndex = 0;
+        
+        document.getElementById('total-idx').innerText = articles.length;
+
+        function render(index) {{
+            if (index < 0) index = 0;
+            if (index >= articles.length) index = articles.length - 1;
+            currentIndex = index;
+
+            const item = articles[currentIndex];
+
+            document.getElementById('current-idx').innerText = currentIndex + 1;
+            document.getElementById('jump-input').value = currentIndex + 1;
+            
+            // 组装上方的信息栏链接
+            let main_link = item.main_url ? `<a href="${{item.main_url}}" target="_blank">首页: ${{item.site || "未知"}}</a>` : `<span>首页: ${{item.site || "未知"}}(无链接)</span>`;
+            let list_link = item.list_url ? `<a href="${{item.list_url}}" target="_blank">📄 公告列表页</a>` : `<span style="color:#aaa;">📄 公告列表页(无)</span>`;
+            let detail_link = item.detail_url ? `<a href="${{item.detail_url}}" target="_blank">🔗 当前文章页</a>` : `<span style="color:#aaa;">🔗 当前文章页(无)</span>`;
+            
+            document.getElementById('article-info').innerHTML = main_link + " | " + list_link + " | " + detail_link;
+
+            document.getElementById('article-title').innerText = item.title || "无标题";
+            document.getElementById('article-content').innerText = item.content || "【未提取到正文内容】";
+
+            const result = item.result;
+            const badge = document.getElementById('result-badge');
+            badge.innerText = result;
+            badge.title = result; 
+            if (result === "正常") {{
+                badge.style.backgroundColor = "#2FA572";
+            }} else {{
+                badge.style.backgroundColor = "#E74C3C";
+            }}
+            window.scrollTo(0, 0);
+        }}
+
+        document.addEventListener('keydown', function(event) {{
+            if (event.key === "ArrowRight") render(currentIndex + 1);
+            else if (event.key === "ArrowLeft") render(currentIndex - 1);
+        }});
+
+        function jump() {{
+            let val = parseInt(document.getElementById('jump-input').value);
+            if (!isNaN(val) && val > 0 && val <= articles.length) render(val - 1);
+            else alert("请输入有效的页码！");
+        }}
+
+        document.getElementById('jump-input').addEventListener('keypress', function(e) {{
+            if (e.key === 'Enter') jump();
+        }});
+
+        if(articles.length > 0) render(0);
+    </script>
+</body>
+</html>
+"""
+        with open(save_path, "w", encoding="utf-8") as f:
+            f.write(html_template)
 
     def process_excel(self, path, keywords, min_words):
         try:
@@ -130,24 +246,23 @@ class ExcelInspectorApp:
             df = pd.read_excel(path)
             
             if len(df.columns) < 15:
-                self.log("❌ [严重错误] Excel 列数不足！请确认是否符合规范。")
+                self.log("❌ [严重错误] Excel 列数不足！")
                 self.finish_inspection()
                 return
 
-            # 用于导出的 5 列数据载体
             out_site_names = []
-            out_main_titles = []  # 新增：首页title
+            out_main_titles = []  
             out_results = []
             out_m_contents = []
             out_l_titles = []
-
+            
+            html_data_list = []
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
             for index, row in df.iterrows():
                 row_num = index + 2 
                 self.log(f"🔎 正在处理第 {row_num} 行数据...")
                 
-                # 读取特定列的数据
                 val_A = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else "未知网站"
                 val_C = str(row.iloc[2]).strip() if pd.notna(row.iloc[2]) else ""
                 val_G = str(row.iloc[6]).strip() if pd.notna(row.iloc[6]) else ""
@@ -158,15 +273,16 @@ class ExcelInspectorApp:
 
                 row_errors = []
                 l_title_extracted = ""
+                detail_url_extracted = ""
+                main_url = ""
                 main_title = ""
 
                 out_site_names.append(val_A)
                 out_m_contents.append(val_M)
 
-                # ================= 新增功能：获取主站域名首页 Title =================
+                # ================= 获取主站URL及首页Title =================
                 if val_C and val_C.startswith("http"):
                     try:
-                        # 解析URL获取主站
                         parsed_url = urlparse(val_C)
                         main_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
                         
@@ -190,20 +306,19 @@ class ExcelInspectorApp:
                 
                 out_main_titles.append(main_title)
 
-                # ================= 逻辑1：判断M、N、O是否为空 =================
-                empty_cols = []
-                if not val_M: empty_cols.append("M列")
-                if not val_N: empty_cols.append("N列")
-                if not val_O: empty_cols.append("O列")
-                if empty_cols:
-                    row_errors.append(f"{','.join(empty_cols)}为空")
-
-                # ================= 逻辑2：判断M列与L列title是否一致 =================
+                # ================= L列解析 (含详情页URL绝对路径补全) =================
                 if val_L:
                     try:
                         json_data = json.loads(val_L)
                         l_title_extracted = json_data.get("title", "").strip()
+                        raw_detail_url = json_data.get("url", "").strip()
                         
+                        # 智能补全相对路径为绝对路径
+                        if raw_detail_url and val_C and not raw_detail_url.startswith("http"):
+                            detail_url_extracted = urljoin(val_C, raw_detail_url)
+                        else:
+                            detail_url_extracted = raw_detail_url
+
                         if val_M and val_M != l_title_extracted:
                             row_errors.append(f"M列与L列标题不一致")
                     except json.JSONDecodeError:
@@ -212,19 +327,27 @@ class ExcelInspectorApp:
                 
                 out_l_titles.append(l_title_extracted)
 
-                # ================= 逻辑4：O列是否包含违禁词 =================
+                # 空值校验
+                empty_cols = []
+                if not val_M: empty_cols.append("M列")
+                if not val_N: empty_cols.append("N列")
+                if not val_O: empty_cols.append("O列")
+                if empty_cols:
+                    row_errors.append(f"{','.join(empty_cols)}为空")
+
+                # 违禁词校验
                 if val_O:
                     found_kws = [kw for kw in keywords if kw in val_O]
                     if found_kws:
                         row_errors.append(f"包含屏蔽词:[{','.join(found_kws)}]")
 
-                # ================= 逻辑5：正文字数统计 =================
+                # 字数统计
                 if val_O:
                     clean_text = re.sub(r'\s+', '', val_O)
                     if len(clean_text) < min_words:
                         row_errors.append(f"正文不足{min_words}字(当前{len(clean_text)}字)")
 
-                # ================= 逻辑3：公告页网页请求与探测 =================
+                # 探测列表页
                 if not val_C or not val_C.startswith("http"):
                     row_errors.append("C列URL为空或不合法")
                 elif not val_G:
@@ -234,34 +357,39 @@ class ExcelInspectorApp:
                         self.log(f"   > 探测列表选择器...")
                         resp = requests.get(val_C, headers=headers, timeout=10, verify=False)
                         resp.encoding = resp.apparent_encoding
-                        
                         if resp.status_code != 200:
-                            row_errors.append(f"网页打开异常(HTTP {resp.status_code})")
+                            row_errors.append(f"网页异常(HTTP {resp.status_code})")
                         else:
                             soup = BeautifulSoup(resp.text, "html.parser")
                             try:
                                 elements = soup.select(val_G)
                                 if len(elements) == 0:
-                                    row_errors.append("未找到选择器(可能为动态页面或写错)")
+                                    row_errors.append("未找到选择器(可能为动态页面)")
                             except Exception:
-                                row_errors.append("G列非合法CSS选择器")
-                    except requests.exceptions.Timeout:
-                        row_errors.append("网页请求超时")
-                    except requests.exceptions.RequestException:
-                        row_errors.append("网页连接失败")
+                                row_errors.append("G列非合法选择器")
+                    except Exception:
+                        row_errors.append("网页连接失败/超时")
 
-                # ================= 总结单行结果 =================
+                # 总结单行结果
                 if len(row_errors) == 0:
                     final_res = "正常"
                 else:
                     final_res = "[异常] " + " | ".join(row_errors)
-                
                 out_results.append(final_res)
 
-            # ================= 组装新的 DataFrame 并导出 =================
-            self.log("数据处理完毕，正在生成精简版结果表...")
-            
-            # 按要求的 5 列顺序排列
+                # ====== 将组装好的URL全部推入前端容器 ======
+                html_data_list.append({
+                    "site": val_A,
+                    "title": val_M,
+                    "content": val_O,
+                    "result": final_res,
+                    "main_url": main_url if main_title != "[C列URL不合法]" else "",
+                    "list_url": val_C,
+                    "detail_url": detail_url_extracted
+                })
+
+            # ================= 导出流程 =================
+            self.log("正在生成精简版 Excel 结果表...")
             final_df = pd.DataFrame({
                 "网站名称": out_site_names,
                 "首页title": out_main_titles,
@@ -272,20 +400,25 @@ class ExcelInspectorApp:
             
             dir_name = os.path.dirname(path)
             base_name = os.path.basename(path)
-            new_name = base_name.replace(".xlsx", "_结果.xlsx")
-            save_path = os.path.join(dir_name, new_name)
             
-            final_df.to_excel(save_path, index=False)
+            excel_new_name = base_name.replace(".xlsx", "_精简巡检结果.xlsx")
+            excel_save_path = os.path.join(dir_name, excel_new_name)
+            final_df.to_excel(excel_save_path, index=False)
+
+            self.log("正在打包生成沉浸式 HTML 阅读器...")
+            html_new_name = base_name.replace(".xlsx", "_沉浸阅读器.html")
+            html_save_path = os.path.join(dir_name, html_new_name)
+            self.generate_html_reader(html_save_path, html_data_list)
             
             self.log("="*40)
-            self.log(f"🎉 巡检全部完成！")
-            self.log(f"💾 结果文件已保存至：{save_path}")
+            self.log(f"🎉 全部任务圆满完成！")
             
-            self.root.after(0, lambda: messagebox.showinfo("任务完成", f"巡检已完成！\n结果已保存为：\n{new_name}"))
+            self.root.after(0, lambda: messagebox.showinfo("任务完成", 
+                f"巡检已全部完成！\n\n1. 结果表：{excel_new_name}\n2. 阅读器：{html_new_name}\n\n建议直接双击打开 .html 文件进行沉浸式审查！"))
 
         except Exception as e:
             self.log(f"❌ [代码异常] {str(e)}")
-            self.root.after(0, lambda: messagebox.showerror("程序异常", f"执行过程中发生致命错误：\n{str(e)}"))
+            self.root.after(0, lambda: messagebox.showerror("程序异常", f"发生致命错误：\n{str(e)}"))
         finally:
             self.finish_inspection()
 
