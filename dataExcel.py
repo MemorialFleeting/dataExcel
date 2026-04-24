@@ -196,7 +196,7 @@ class UniversalProcessor:
         source_df['所属类别'] = source_df.apply(determine_category, axis=1)
 
         # 核心业务标签打标
-        source_df['公职'] = source_df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["26公职","27公职","28公职","29公职"]))
+        source_df['公职'] = source_df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["27公职","28公职","29公职"]))
         kw_shiye = ["26事业","26三支","26社区","26辅警","26书记员","26国企","30事业","30三支","30社区","30辅警","30书记员","30国企", "27事业","27三支","27社区","27辅警","27书记员","27国企","28事业","28三支","28社区","28辅警","28书记员","28国企", "29事业","29三支","29社区","29辅警","29书记员","29国企"]
         source_df['事业辅助列'] = source_df['备注名'].apply(lambda x: self.check_keyword_flag(x, kw_shiye))
         source_df['教师'] = source_df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["26教师","26特岗","26教资","30教师","30特岗","30教资","27教师","27特岗","27教资","28教师","28特岗","28教资","29教师","29特岗","29教资"]))
@@ -1094,7 +1094,8 @@ class App:
         param_frame.pack(fill="x", padx=10, pady=5)
         ttk.Label(param_frame, text="📅 判断月份:").pack(side="left")
         self.ent_month = ttk.Entry(param_frame, width=15)
-        self.ent_month.insert(0, "2026-01")
+        current_ym = datetime.date.today().strftime("%Y-%m")
+        self.ent_month.insert(0, current_ym)
         self.ent_month.pack(side="left", padx=5)
         
         ttk.Label(param_frame, text="📆 特定日期:").pack(side="left")
@@ -1175,7 +1176,10 @@ class App:
 
         top = tk.Toplevel(self.root)
         top.title("选择日期区间")
-        top.geometry("580x280")
+       # 获取输入框在屏幕上的绝对坐标，并将弹窗定位在输入框正下方5个像素处
+        x = target_entry.winfo_rootx()
+        y = target_entry.winfo_rooty() + target_entry.winfo_height() + 5
+        top.geometry(f"580x280+{x}+{y}")
         top.resizable(False, False)
         top.grab_set()  # 模态窗口，阻断其他操作
 
