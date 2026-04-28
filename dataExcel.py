@@ -1,1351 +1,557 @@
-import pandas as pd
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext
-from tkinter import ttk
-import os
+from tkinter import filedialog, messagebox
+import customtkinter as ctk
+import pandas as pd
+import json
+import requests
+from bs4 import BeautifulSoup
 import threading
-import time
 import re
-import datetime  # 新增：用于日期推算
-from openpyxl import load_workbook
-from openpyxl.styles import Alignment, Font, Border, Side, PatternFill
+import urllib3
+import os
+import time
+from urllib.parse import urlparse, urljoin
 
-# 新增：尝试导入 tkcalendar，如果未安装则给予提示容错
-try:
-    from tkcalendar import Calendar
-    HAS_TKCALENDAR = True
-except ImportError:
-    HAS_TKCALENDAR = False
+# 忽略不安全的SSL警告
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# ==============================================================================
-# 配置区域：分校分类与固定顺序
-# ==============================================================================
-FIXED_ORDER_CITIES = [
-    "新乡", "沧州", "松原", "临汾", "汉中", "朝阳", "徐州",
-    "海淀", "怀柔", "顺义", "房山", "大兴", "昌平", "平谷", "通州", "延庆", "密云",
-    "包头", "通辽", "赤峰",
-    "天津", "武清", "静海", "滨海"
-]
+ctk.set_appearance_mode("System")
+ctk.set_default_color_theme("blue")
 
-DEFAULT_BRANCH_MAP = {
-    "新乡": "河南分校", "沧州": "河北分校", "松原": "吉林分校", "临汾": "山西分校",
-    "汉中": "陕西分校", "朝阳": "辽宁分校", "徐州": "江苏分校",
-    "海淀": "北京分校", "怀柔": "北京分校", "顺义": "北京分校", "房山": "北京分校",
-    "大兴": "北京分校", "昌平": "北京分校", "平谷": "北京分校", "通州": "北京分校",
-    "延庆": "北京分校", "密云": "北京分校",
-    "包头": "内蒙古分校", "通辽": "内蒙古分校", "赤峰": "内蒙古分校",
-    "天津": "天津分校", "武清": "天津分校", "静海": "天津分校", "滨海": "天津分校"
-}
-
-BRANCH_GROUPS = {
-    "A": ["山东分校", "广东分校", "河南分校", "河北分校", "湖北分校", "吉林分校", "山西分校", "陕西分校", "安徽分校", "辽宁分校", "云南分校"],
-    "B": ["江苏分校", "湖南分校", "四川分校", "黑龙江分校", "广西分校", "新疆分校", "浙江分校", "江西分校",  "北京分校","内蒙古分校"],
-    "C": ["贵州分校","福建分校","甘肃分校", "海南分校",  "宁夏分校", "青海分校", "厦门分校", "上海分校", "天津分校", "西藏分校", "重庆分校"]
-}
-
-# ==============================================================================
-# 核心处理类
-# ==============================================================================
-class UniversalProcessor:
-    def __init__(self, log_func):
-        self.log_callback = log_func
-        self.use_special_city_logic = False
-
-    def log(self, message):
-        """带有 UI 强制刷新的日志输出"""
-        self.log_callback(message)
-
-    def excel_lookup_find(self, text, keywords, results, default_value):
-        """模拟 Excel 的 LOOKUP FIND 逻辑，用于识别分校"""
-        if pd.isna(text):
-            return default_value
-        
-        text_string = str(text)
-        # 逆序查找，确保长关键词优先匹配
-        for keyword, result in zip(reversed(keywords), reversed(results)):
-            if keyword in text_string:
-                return result
-        return default_value
-
-    def check_keyword_flag(self, text, keywords):
-        """检查文本是否包含关键词列表中的任何一个，返回 1 或 空"""
-        if pd.isna(text):
-            return ""
-        
-        text_string = str(text)
-        for keyword in keywords:
-            if keyword in text_string:
-                return 1
-        return ""
-
-    def extract_city_smart(self, dept_path):
-        """从负责人所属部门路径中智能提取地市名称 (融合 4.0 核心逻辑回归版)"""
-        if pd.isna(dept_path):
-            return "未知"
-        
-        text_string = str(dept_path).replace('\r', '\n')
-        lines = [line.strip() for line in text_string.split('\n') if line.strip()]
-        if not lines:
-            return "其他"
-            
-        target_line = ""
-        for line in lines:
-            if "地市分校" in line:
-                target_line = line
-                break
-        if not target_line:
-            for line in lines:
-                if "分校" in line:
-                    target_line = line
-                    break
-        if not target_line:
-            target_line = lines[0]
-            
-        clean_text = target_line.replace('"', '').replace("'", "").replace("华图教育", "").strip()
-        parts = [part.strip() for part in clean_text.split('/') if part.strip()]
-        if not parts:
-            return "其他"
-            
-        final_city_name = ""
-        # 1. 直接匹配包含"地市分校"的节点
-        for part in parts:
-            if "地市分校" in part and part != "地市分校":
-                final_city_name = part.replace("地市分校", "")
-                break
-                
-        # 2. ★ 找回 4.0 丢失的逻辑：处理 "XX分校/各校区/某某市" 的多层级嵌套
-        if not final_city_name:
-            for i, part in enumerate(parts):
-                if "分校" in part and len(part) > 2:
-                    if i + 1 < len(parts):
-                        target = parts[i+1]
-                        # 智能跳过无意义的中间层级
-                        if target in ["地市分校", "各校区"]:
-                            if i + 2 < len(parts): 
-                                target = parts[i+2]
-                            else: 
-                                continue
-                        final_city_name = target
-                        break
-                        
-        # 3. 兜底：取最后一级
-        if not final_city_name:
-            final_city_name = parts[-1]
-            
-        # 4. 剥离冗余后缀 (保留 6.0 的 while 循环优势，彻底清除叠加后缀)
-        suffixes = ["区属学习中心", "高校学习中心", "学习中心", "办事处", "地市分校", "分校", "分部", "校区", "运营中心", "基地", "工作站", "旗舰店"]
-        changed = True
-        while changed:
-            changed = False
-            for suffix in suffixes:
-                if final_city_name.endswith(suffix):
-                    final_city_name = final_city_name[:-len(suffix)]
-                    changed = True
-                    
-        if not final_city_name:
-            return "其他"
-            
-        return final_city_name
-
-    def standardize_city_name(self, city_name):
-        """标准化地市名称，去除市字和空白符 (找回 4.0 的特殊字符清理)"""
-        if pd.isna(city_name):
-            return "其他"
-        
-        standard_name = str(city_name).strip()
-        
-        # ★ 找回 4.0 丢失的逻辑：清理 Excel 导出的底层换行符编码
-        standard_name = standard_name.replace("_x000D_", "").replace("_x000d_", "")
-        
-        # 清除所有不可见空白符
-        standard_name = re.sub(r'[\s\r\n\t\u200b\ufeff\xa0]+', '', standard_name)
-        
-        # 去除末尾的"市"字（排除误伤如"沙市"）
-        if len(standard_name) > 2 and standard_name.endswith("市"):
-            standard_name = standard_name[:-1]
-            
-        if not standard_name:
-            return "其他"
-            
-        return standard_name
-
-    def process_step1(self, source_df, date_keyword, custom_total_kws_str):
-        """步骤1：全量数据清洗与业务标签计算 (严格回归 4.0 逻辑)"""
-        self.log("【数据清洗】正在提取地市与计算业务标签...")
-        
-        # 统一表头格式
-        source_df.columns = [str(column).replace('\ufeff', '').strip() for column in source_df.columns]
-        
-        # 识别分校
-        branch_keywords = ["通辽分校", "陕西分校", "湖北分校", "辽宁分校", "河北分校", "甘肃分校", "厦门分校", "福建分校", "山东分校", "北京分校", "安徽分校", "黑龙江分校", "吉林分校", "江苏分校", "重庆分校", "广东分校", "天津分校", "河南分校", "云南分校", "江西分校", "湖南分校", "贵州分校", "广西分校", "山西分校", "宁夏分校", "内蒙古分校", "浙江分校", "新疆分校", "青海分校", "南疆分校", "四川分校", "上海分校", "海南分校", "西藏分校", "赤峰"]
-        branch_results = ["内蒙古分校", "陕西分校", "湖北分校", "辽宁分校", "河北分校", "甘肃分校", "厦门分校", "福建分校", "山东分校", "北京分校", "安徽分校", "黑龙江分校", "吉林分校", "江苏分校", "重庆分校", "广东分校", "天津分校", "河南分校", "云南分校", "江西分校", "湖南分校", "贵州分校", "广西分校", "山西分校", "宁夏分校", "内蒙古分校", "浙江分校", "新疆分校", "青海分校", "新疆分校", "四川分校", "上海分校", "海南分校", "西藏分校", "内蒙古分校"]
-        
-        source_df['分校'] = source_df['负责人所属部门'].apply(lambda x: self.excel_lookup_find(x, branch_keywords, branch_results, "总部"))
-        source_df['地市'] = source_df['负责人所属部门'].apply(self.extract_city_smart)
-        source_df['地市'] = source_df['地市'].apply(self.standardize_city_name)
-
-        # 类别判断
-        def determine_category(row):
-            dept_raw = str(row['负责人所属部门'])
-            if "地市分校" in dept_raw:
-                return "地市"
-            if str(row['分校']) in ["北京分校", "天津分校"] and "各校区" in dept_raw:
-                return "地市"
-            return "其它"
-            
-        source_df['所属类别'] = source_df.apply(determine_category, axis=1)
-
-        # 核心业务标签打标
-        source_df['公职'] = source_df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["27公职","28公职","29公职"]))
-        kw_shiye = ["26事业","26三支","26社区","26辅警","26书记员","26国企","30事业","30三支","30社区","30辅警","30书记员","30国企", "27事业","27三支","27社区","27辅警","27书记员","27国企","28事业","28三支","28社区","28辅警","28书记员","28国企", "29事业","29三支","29社区","29辅警","29书记员","29国企"]
-        source_df['事业辅助列'] = source_df['备注名'].apply(lambda x: self.check_keyword_flag(x, kw_shiye))
-        source_df['教师'] = source_df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["26教师","26特岗","26教资","30教师","30特岗","30教资","27教师","27特岗","27教资","28教师","28特岗","28教资","29教师","29特岗","29教资"]))
-        source_df['文职'] = source_df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["30文职","26文职","27文职","28文职","29文职"]))
-        source_df['医疗'] = source_df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["30医疗","26医疗","27医疗","28医疗","29医疗"]))
-        source_df['银行'] = source_df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["30银行","26银行","27银行","28银行","29银行"]))
-        source_df['考研'] = source_df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["30考研","26考研","27考研","28考研","29考研"]))
-        source_df['学历'] = source_df['备注名'].apply(lambda x: self.check_keyword_flag(x, ["30学历","26学历","27学历","28学历","29学历"]))
-        source_df['其他'] = ""
-        
-        # 标备总数判定
-        if custom_total_kws_str.strip():
-            custom_keywords = [k.strip() for k in custom_total_kws_str.replace('，', ',').split(',') if k.strip()]
-            def check_custom_total(remark):
-                if pd.isna(remark): return 0
-                if any(kw in str(remark) for kw in custom_keywords):
-                    return 1
-                return 0
-            source_df['标备总数'] = source_df['备注名'].apply(check_custom_total)
-        else:
-            def check_default_total(row):
-                standard_columns = ['公职', '事业辅助列', '教师', '文职', '医疗', '银行', '考研', '学历']
-                for col in standard_columns:
-                    if row[col] == 1:
-                        return 1
-                return 0
-            source_df['标备总数'] = source_df.apply(check_default_total, axis=1)
-
-        # 日期判定
-        date_keywords_list = [k.strip() for k in date_keyword.replace('，', ',').split(',') if k.strip()]
-        if not date_keywords_list:
-            date_keywords_list = ["FAIL_SAFE"]
-            
-        def check_is_new_friend(create_time):
-            time_str = str(create_time)
-            if any(k in time_str for k in date_keywords_list):
-                return "是"
-            return "否"
-            
-        source_df['！！！是否新增'] = source_df['创建时间'].apply(check_is_new_friend)
-        
-        def format_date_str(val):
-            try:
-                dt_obj = pd.to_datetime(val)
-                return f"{dt_obj.month}月{dt_obj.day}日"
-            except:
-                return str(val)
-        source_df['日期'] = source_df['好友添加时间'].apply(format_date_str)
-
-        # ★ 恢复 4.0 完整的 8词 渠道映射字典
-        channel_keys = ["网络","社会","高校","线上","线上平台","线上活动","现场","线下活动"]
-        channel_results = ["线上平台","线下活动","高校","线上平台","线上平台","线上平台","考试现场","线下活动"]
-        source_df['渠道'] = source_df['渠道活码分组'].apply(lambda x: self.excel_lookup_find(x, channel_keys, channel_results, "其他"))
-        
-        online_keys = ["网站","公众号","小红书","视频号","抖音","文章页","网页","专题","附件","小程序"]
-        online_results = ["网站","公众号","小红书","视频号","抖音","网站","网站","网站","网站","其他"]
-        source_df['线上渠道'] = source_df['渠道活码分组'].apply(lambda x: self.excel_lookup_find(x, online_keys, online_results, "其他"))
-
-        def check_shiye_sub(row):
-            if row['公职'] != 1 and row['事业辅助列'] == 1:
-                return 1
-            return 0
-        source_df['事业2'] = source_df.apply(check_shiye_sub, axis=1)
-        
-        def check_client_reply(row):
-            has_reply_time = pd.notna(row['客户上次回复时间']) and str(row['客户上次回复时间']).strip() != ""
-            if has_reply_time and row['标备总数'] == 1:
-                return "是"
-            return "否"
-        source_df['客户回话'] = source_df.apply(check_client_reply, axis=1)
-
-        # 强制挂载质检原生 5 字段
-        qc_original_fields = ['好友添加来源', '添加渠道码', '员工发送消息数', '客户回复消息数', '是否同意会话存档']
-        for field_name in qc_original_fields:
-            if field_name not in source_df.columns:
-                if '数' in field_name:
-                    source_df[field_name] = 0
-                else:
-                    source_df[field_name] = "未知"
-
-        # ★ 恢复 4.0 严格去重基准：强制提取第 26 列 (索引为25) 作为 ID
-        id_column_name = None
-        if len(source_df.columns) > 25:
-            id_column_name = source_df.columns[25]
-            
-        if 'ExternalUserId' not in source_df.columns:
-            if id_column_name:
-                source_df.rename(columns={id_column_name: 'ExternalUserId'}, inplace=True)
-            elif len(source_df.columns) > 1:
-                # 兜底逻辑：如果没有26列，取第2列
-                source_df.rename(columns={source_df.columns[1]: 'ExternalUserId'}, inplace=True)
-
-        final_extract_cols = [
-            '备注名', 'ExternalUserId', '分校', '地市', '所属类别', 
-            '公职', '事业2', '教师', '文职', '医疗', '银行', '考研', '学历', '其他', 
-            '标备总数', '！！！是否新增', '渠道', '线上渠道', '客户回话', '日期', 
-            '添加好友状态', '好友添加来源', '添加渠道码', '员工发送消息数', '客户回复消息数', '是否同意会话存档'
-        ]
-        
-        actual_cols_present = [c for c in final_extract_cols if c in source_df.columns]
-        df_cleaned_all = source_df[actual_cols_present].copy()
-        
-        # 强制转换数值列以防计算报错
-        for numeric_col in ['公职', '事业2', '标备总数', '员工发送消息数', '客户回复消息数']:
-            if numeric_col in df_cleaned_all.columns:
-                df_cleaned_all[numeric_col] = pd.to_numeric(df_cleaned_all[numeric_col], errors='coerce').fillna(0)
-
-        self.log("正在执行全量数据去重逻辑与留存筛选...")
-        df_dedup_province = df_cleaned_all.drop_duplicates(subset=['ExternalUserId', '分校'], keep='first')
-        df_dedup_city = df_cleaned_all.drop_duplicates(subset=['ExternalUserId', '分校', '地市'], keep='first')
-        
-        df_retention_only = pd.DataFrame()
-        if '添加好友状态' in df_cleaned_all.columns:
-            df_retention_only = df_cleaned_all[df_cleaned_all['添加好友状态'].astype(str).str.contains("已添加", na=False)].copy()
-
-        return df_cleaned_all, df_dedup_province, df_dedup_city, df_retention_only
-
-    # --- 统计辅助函数 (保持 4.0 逻辑清晰度) ---
-    def calculate_summary_stats(self, raw_data_df, dedup_data_df):
-        """计算基础统计指标：新增、去重、标备、回话"""
-        new_added_subset = dedup_data_df[dedup_data_df['！！！是否新增'].astype(str).str.contains("是", na=False)]
-        
-        raw_count_val = len(raw_data_df)
-        dedup_count_val = len(dedup_data_df)
-        new_added_count_val = len(new_added_subset)
-        
-        gz_sum_val = new_added_subset['公职'].sum()
-        sy_sum_val = new_added_subset['事业2'].sum()
-        total_tb_sum_val = new_added_subset['标备总数'].sum()
-        
-        reply_count_val = len(new_added_subset[new_added_subset['客户回话'].astype(str).str.contains("是", na=False)])
-        
-        results = {
-            "raw_count": raw_count_val,
-            "dedup_count": dedup_count_val,
-            "new_added_count": new_added_count_val,
-            "gz_sum": gz_sum_val,
-            "sy_sum": sy_sum_val,
-            "total_tb_sum": total_tb_sum_val,
-            "reply_count": reply_count_val
-        }
-        return results
-
-    def format_output_row_list(self, stats_dict, is_province_mode=False):
-        """将统计字典转换为报表行，强制整数百分比"""
-        def safe_division(a, b):
-            return a / b if b != 0 else 0.0
-            
-        def to_percentage_integer(value):
-            return f"{int(round(value * 100))}%"
-
-        repeat_rate = safe_division((stats_dict["dedup_count"] - stats_dict["new_added_count"]), stats_dict["dedup_count"])
-        other_tb_count = stats_dict["total_tb_sum"] - stats_dict["gz_sum"] - stats_dict["sy_sum"]
-        tb_rate = safe_division(stats_dict["total_tb_sum"], stats_dict["new_added_count"])
-        reply_rate = safe_division(stats_dict["reply_count"], stats_dict["new_added_count"])
-        
-        return [
-            int(stats_dict["raw_count"]),
-            int(stats_dict["dedup_count"]),
-            int(stats_dict["new_added_count"]),
-            to_percentage_integer(repeat_rate),
-            int(stats_dict["gz_sum"]),
-            int(stats_dict["sy_sum"]),
-            int(other_tb_count),
-            int(stats_dict["total_tb_sum"]),
-            to_percentage_integer(tb_rate),
-            int(stats_dict["reply_count"]),
-            to_percentage_integer(reply_rate)
-        ]
-
-    def calc_stats_retention_data(self, retention_df_subset):
-        """计算留存版专用指标"""
-        if len(retention_df_subset) == 0:
-            return {"gz": 0, "sy": 0, "tb": 0, "ret": 0}
-        
-        gz_sum_val = retention_df_subset['公职'].sum()
-        sy_sum_val = retention_df_subset['事业2'].sum()
-        tb_sum_val = retention_df_subset['标备总数'].sum()
-        
-        return {
-            "gz": gz_sum_val,
-            "sy": sy_sum_val,
-            "tb": tb_sum_val,
-            "ret": len(retention_df_subset)
-        }
-
-    def format_retention_row_list(self, stats_dict):
-        """留存版行数据转换"""
-        def safe_division(a, b):
-            return a / b if b != 0 else 0.0
-            
-        def to_percentage_integer(value):
-            return f"{int(round(value * 100))}%"
-            
-        other_count = stats_dict["tb"] - stats_dict["gz"] - stats_dict["sy"]
-        tb_rate = safe_division(stats_dict["tb"], stats_dict["ret"])
-        
-        return [
-            int(stats_dict["ret"]),
-            int(stats_dict["gz"]),
-            int(stats_dict["sy"]),
-            int(other_count),
-            int(stats_dict["tb"]),
-            to_percentage_integer(tb_rate)
-        ]
-
-    # ==============================================================================
-    # 报表生成系列：常规流程 (01 - 09)
-    # ==============================================================================
-    def gen_prov_long_merged(self, df_raw, df_dedup, output_file):
-        self.log(f"正在生成报表 [01_省份一维]: {os.path.basename(output_file)}")
-        groups = BRANCH_GROUPS
-        iter_list = [("线上平台", "网站", "网站"), ("线上平台", "小红书", "小红书"), ("线上平台", "公众号", "公众号"), ("线上平台", "抖音", "抖音"), ("线上平台", "视频号", "视频号"), ("线上平台", "其他", "其他"), ("线下活动", "线下活动", "线下活动"), ("考试现场", "考试现场", "考试现场"), ("高校", "高校", "高校"), ("其他", "其他", "其他")]
-        
-        final_rows = []
-        # 初始化全国汇总
-        grand_national_stats = {key: {"raw_count":0, "dedup_count":0,"new_added_count":0,"gz_sum":0,"sy_sum":0,"total_tb_sum":0,"reply_count":0} for key in [x[2] for x in iter_list]}
-        
-        for group_name, branches in groups.items():
-            group_accumulator = {key: {"raw_count":0, "dedup_count":0,"new_added_count":0,"gz_sum":0,"sy_sum":0,"total_tb_sum":0,"reply_count":0} for key in [x[2] for x in iter_list]}
-            for branch_name in branches:
-                branch_raw_df = df_raw[df_raw['分校'] == branch_name]
-                branch_dedup_df = df_dedup[df_dedup['分校'] == branch_name]
-                
-                for p_name, f_keyword, s_name in iter_list:
-                    if p_name == "线上平台":
-                        current_raw = branch_raw_df[(branch_raw_df['渠道'] == '线上平台') & (branch_raw_df['线上渠道'] == f_keyword)]
-                        current_dedup = branch_dedup_df[(branch_dedup_df['渠道'] == '线上平台') & (branch_dedup_df['线上渠道'] == f_keyword)]
-                    else:
-                        current_raw = branch_raw_df[branch_raw_df['渠道'] == f_keyword]
-                        current_dedup = branch_dedup_df[branch_dedup_df['渠道'] == f_keyword]
-                    
-                    stats = self.calculate_summary_stats(current_raw, current_dedup)
-                    
-                    for stat_key in stats:
-                        group_accumulator[s_name][stat_key] += stats[stat_key]
-                        grand_national_stats[s_name][stat_key] += stats[stat_key]
-                        
-                    final_rows.append([branch_name, p_name, s_name] + self.format_output_row_list(stats, True))
-            
-            # 写入类别总计行
-            for p_name, f_keyword, s_name in iter_list:
-                final_rows.append([f"{group_name}类总计", p_name, s_name] + self.format_output_row_list(group_accumulator[s_name], True))
-        
-        # 写入全国总计行
-        for p_name, f_keyword, s_name in iter_list:
-            final_rows.append(["全国", p_name, s_name] + self.format_output_row_list(grand_national_stats[s_name], True))
-            
-        header_names = ["分校", "所属平台", "所属渠道", "新增好友", "本月分校内去重", "净新增", "重复率", "公职标备", "事业标备", "其他标备", "标备总量", "标备率", "回话备注", "回话备注率"]
-        pd.DataFrame(final_rows, columns=header_names).to_excel(output_file, index=False)
-        self._style_excel(output_file)
-
-    def gen_prov_wide(self, df_raw, df_dedup, output_file, channel_map, strict_online):
-        self.log(f"正在生成报表 [省份宽表]: {os.path.basename(output_file)}")
-        groups = BRANCH_GROUPS
-        final_rows = []
-        grand_national_stats = {ct[0]: {"raw_count":0, "dedup_count":0,"new_added_count":0,"gz_sum":0,"sy_sum":0,"total_tb_sum":0,"reply_count":0} for ct in channel_map}
-        
-        for group_name, branches in groups.items():
-            group_accumulator = {ct[0]: {"raw_count":0, "dedup_count":0,"new_added_count":0,"gz_sum":0,"sy_sum":0,"total_tb_sum":0,"reply_count":0} for ct in channel_map}
-            for branch_name in branches:
-                branch_raw_df = df_raw[df_raw['分校'] == branch_name]
-                branch_dedup_df = df_dedup[df_dedup['分校'] == branch_name]
-                row_data = [branch_name]
-                
-                for ct_title, cf_keyword in channel_map:
-                    if cf_keyword:
-                        if strict_online:
-                            current_raw = branch_raw_df[(branch_raw_df['渠道'] == '线上平台') & (branch_raw_df['线上渠道'] == cf_keyword)]
-                            current_dedup = branch_dedup_df[(branch_dedup_df['渠道'] == '线上平台') & (branch_dedup_df['线上渠道'] == cf_keyword)]
-                        else:
-                            current_raw = branch_raw_df[branch_raw_df['渠道'] == cf_keyword]
-                            current_dedup = branch_dedup_df[branch_dedup_df['渠道'] == cf_keyword]
-                    else:
-                        current_raw = branch_raw_df
-                        current_dedup = branch_dedup_df
-                        
-                    stats = self.calculate_summary_stats(current_raw, current_dedup)
-                    
-                    for stat_key in stats:
-                        group_accumulator[ct_title][stat_key] += stats[stat_key]
-                        grand_national_stats[ct_title][stat_key] += stats[stat_key]
-                        
-                    row_data.extend(self.format_output_row_list(stats, True))
-                final_rows.append(row_data)
-            
-            group_summary_row = [f"{group_name}类总计"]
-            for ct_title, _ in channel_map:
-                group_summary_row.extend(self.format_output_row_list(group_accumulator[ct_title], True))
-            final_rows.append(group_summary_row)
-            
-        national_row = ["全国"]
-        for ct_title, _ in channel_map:
-            national_row.extend(self.format_output_row_list(grand_national_stats[ct_title], True))
-        final_rows.append(national_row)
-        
-        self._write_wide_excel_structured(output_file, final_rows, channel_map, 2, False)
-
-    def gen_city_long_merged(self, df_raw, df_dedup, df_ret, output_file, do_retention):
-        self.log(f"正在生成报表 [04_地市一维]: {os.path.basename(output_file)}")
-        iter_list = [("线上平台", "网站", "网站"), ("线上平台", "小红书", "小红书"), ("线上平台", "公众号", "公众号"), ("线上平台", "抖音", "抖音"), ("线上平台", "视频号", "视频号"), ("线上平台", "其他", "其他"), ("线下活动", "线下活动", "线下活动"), ("考试现场", "考试现场", "考试现场"), ("高校", "高校", "高校"), ("其他", "其他", "其他")]
-        
-        final_rows = []
-        grand_national_stats = {key: {"raw_count":0, "dedup_count":0,"new_added_count":0,"gz_sum":0,"sy_sum":0,"total_tb_sum":0,"reply_count":0} for key in [x[2] for x in iter_list]}
-        grand_retention_stats = {key: {"gz": 0, "sy": 0, "tb": 0, "ret": 0} for key in [x[2] for x in iter_list]}
-        
-        all_branches = sorted(df_raw['分校'].dropna().unique())
-        for branch_name in all_branches:
-            branch_raw_subset = df_raw[df_raw['分校'] == branch_name]
-            branch_dedup_subset = df_dedup[df_dedup['分校'] == branch_name]
-            branch_retention_subset = df_ret[df_ret['分校'] == branch_name] if do_retention else None
-            
-            all_cities = sorted(branch_raw_subset['地市'].dropna().unique())
-            for city_name in all_cities:
-                city_raw_df = branch_raw_subset[branch_raw_subset['地市'] == city_name]
-                city_dedup_df = branch_dedup_subset[branch_dedup_subset['地市'] == city_name]
-                category_name = city_raw_df['所属类别'].iloc[0] if not city_raw_df.empty else "其它"
-                
-                for p_name, f_keyword, s_name in iter_list:
-                    if p_name == "线上平台":
-                        current_raw = city_raw_df[(city_raw_df['渠道'] == '线上平台') & (city_raw_df['线上渠道'] == f_keyword)]
-                        current_dedup = city_dedup_df[(city_dedup_df['渠道'] == '线上平台') & (city_dedup_df['线上渠道'] == f_keyword)]
-                    else:
-                        current_raw = city_raw_df[city_raw_df['渠道'] == f_keyword]
-                        current_dedup = city_dedup_df[city_dedup_df['渠道'] == f_keyword]
-                    
-                    stats = self.calculate_summary_stats(current_raw, current_dedup)
-                    for stat_key in stats:
-                        grand_national_stats[s_name][stat_key] += stats[stat_key]
-                    
-                    retention_cols_data = []
-                    if do_retention:
-                        city_ret_base = branch_retention_subset[branch_retention_subset['地市'] == city_name]
-                        if p_name == "线上平台":
-                            city_ret_final = city_ret_base[(city_ret_base['渠道'] == '线上平台') & (city_ret_base['线上渠道'] == f_keyword)]
-                        else:
-                            city_ret_final = city_ret_base[city_ret_base['渠道'] == f_keyword]
-                            
-                        ret_stats = self.calc_stats_retention_data(city_ret_final)
-                        for ret_key in ret_stats:
-                            grand_retention_stats[s_name][ret_key] += ret_stats[ret_key]
-                            
-                        retention_cols_data = [
-                            int(ret_stats["ret"]),
-                            int(ret_stats["gz"]),
-                            int(ret_stats["sy"]),
-                            int(ret_stats["tb"] - ret_stats["gz"] - ret_stats["sy"]),
-                            int(ret_stats["tb"])
-                        ]
-                    
-                    final_rows.append([branch_name, city_name, category_name, p_name, s_name] + self.format_output_row_list(stats, False) + retention_cols_data)
-        
-        # 写入全国维度
-        for p_name, f_keyword, s_name in iter_list:
-            national_row = ["全国", "总计", "-", p_name, s_name] + self.format_output_row_list(grand_national_stats[s_name], False)
-            if do_retention:
-                rs_national = grand_retention_stats[s_name]
-                national_row += [
-                    int(rs_national["ret"]),
-                    int(rs_national["gz"]),
-                    int(rs_national["sy"]),
-                    int(rs_national["tb"] - rs_national["gz"] - rs_national["sy"]),
-                    int(rs_national["tb"])
-                ]
-            final_rows.append(national_row)
-            
-        header_names = ["分校", "地市", "所属类别", "所属平台", "所属渠道", "新增好友", "本月分校内去重", "净新增", "重复率", "净-公职标备", "净-事业标备", "净-其他标备", "净-标备总量", "净-标备率", "回话备注", "回话备注率"]
-        if do_retention:
-            header_names += ["总-留存量", "总-公职标备", "总-事业标备", "总-其他标备", "总-标备总量"]
-            
-        pd.DataFrame(final_rows, columns=header_names).to_excel(output_file, index=False)
-        self._style_excel(output_file)
-
-    def gen_city_wide(self, df_raw, df_dedup, output_file, channel_map, strict_online):
-        self.log(f"正在生成报表 [地市宽表]: {os.path.basename(output_file)}")
-        final_rows = []
-        grand_national_stats = {ct[0]: {"raw_count":0, "dedup_count":0,"new_added_count":0,"gz_sum":0,"sy_sum":0,"total_tb_sum":0,"reply_count":0} for ct in channel_map}
-        
-        all_branches = sorted(df_raw['分校'].dropna().unique())
-        for branch_name in all_branches:
-            branch_raw_subset = df_raw[df_raw['分校'] == branch_name]
-            branch_dedup_subset = df_dedup[df_dedup['分校'] == branch_name]
-            
-            all_cities = sorted(branch_raw_subset['地市'].dropna().unique())
-            for city_name in all_cities:
-                row_data = [branch_name, city_name]
-                city_raw_df = branch_raw_subset[branch_raw_subset['地市'] == city_name]
-                city_dedup_df = branch_dedup_subset[branch_dedup_subset['地市'] == city_name]
-                
-                for ct_title, cf_keyword in channel_map:
-                    if cf_keyword:
-                        if strict_online:
-                            current_raw = city_raw_df[(city_raw_df['渠道'] == '线上平台') & (city_raw_df['线上渠道'] == cf_keyword)]
-                            current_dedup = city_dedup_df[(city_dedup_df['渠道'] == '线上平台') & (city_dedup_df['线上渠道'] == cf_keyword)]
-                        else:
-                            current_raw = city_raw_df[city_raw_df['渠道'] == cf_keyword]
-                            current_dedup = city_dedup_df[city_dedup_df['渠道'] == cf_keyword]
-                    else:
-                        current_raw = city_raw_df
-                        current_dedup = city_dedup_df
-                        
-                    stats = self.calculate_summary_stats(current_raw, current_dedup)
-                    for stat_key in stats:
-                        grand_national_stats[ct_title][stat_key] += stats[stat_key]
-                        
-                    row_data.extend(self.format_output_row_list(stats, False))
-                final_rows.append(row_data)
-                
-        national_row = ["全国", "总计"]
-        for ct_title, _ in channel_map:
-            national_row.extend(self.format_output_row_list(grand_national_stats[ct_title], False))
-        final_rows.append(national_row)
-        
-        self._write_wide_excel_structured(output_file, final_rows, channel_map, 3, True)
-
-    def gen_special_city_report(self, df_raw, df_dedup, output_file, channel_map, strict_online):
-        self.log(f"正在生成报表 [独立24地市宽表]: {os.path.basename(output_file)}")
-        final_rows = []
-        grand_national_stats = {ct[0]: {"raw_count":0, "dedup_count":0,"new_added_count":0,"gz_sum":0,"sy_sum":0,"total_tb_sum":0,"reply_count":0} for ct in channel_map}
-        
-        for city_name in FIXED_ORDER_CITIES:
-            city_raw_df = df_raw[df_raw['地市'] == city_name]
-            city_dedup_df = df_dedup[df_dedup['地市'] == city_name]
-            branch_name = city_raw_df['分校'].iloc[0] if not city_raw_df.empty else DEFAULT_BRANCH_MAP.get(city_name, "未知分校")
-            
-            row_data = [branch_name, city_name]
-            for ct_title, cf_keyword in channel_map:
-                if cf_keyword:
-                    if strict_online:
-                        current_raw = city_raw_df[(city_raw_df['渠道'] == '线上平台') & (city_raw_df['线上渠道'] == cf_keyword)]
-                        current_dedup = city_dedup_df[(city_dedup_df['渠道'] == '线上平台') & (city_dedup_df['线上渠道'] == cf_keyword)]
-                    else:
-                        current_raw = city_raw_df[city_raw_df['渠道'] == cf_keyword]
-                        current_dedup = city_dedup_df[city_dedup_df['渠道'] == cf_keyword]
-                else:
-                    current_raw = city_raw_df
-                    current_dedup = city_dedup_df
-                
-                stats = self.calculate_summary_stats(current_raw, current_dedup)
-                for stat_key in stats:
-                    grand_national_stats[ct_title][stat_key] += stats[stat_key]
-                    
-                row_data.extend(self.format_output_row_list(stats, False))
-            final_rows.append(row_data)
-            
-        national_row = ["全国", "总计"]
-        for ct_title, _ in channel_map:
-            national_row.extend(self.format_output_row_list(grand_national_stats[ct_title], False))
-        final_rows.append(national_row)
-        
-        self._write_wide_excel_structured(output_file, final_rows, channel_map, 3, True)
-
-    def gen_wide_retention_all_levels(self, df_ret, output_file, channel_map, strict_online, is_prov, is_spec=False):
-        self.log(f"正在生成报表 [留存版宽表]: {os.path.basename(output_file)}")
-        final_rows = []
-        grand_national_stats = {ct[0]: {"gz":0,"sy":0,"tb":0,"ret":0} for ct in channel_map}
-        
-        if is_spec:
-            for city_name in FIXED_ORDER_CITIES:
-                city_ret_df = df_ret[df_ret['地市'] == city_name]
-                branch_name = city_ret_df['分校'].iloc[0] if not city_ret_df.empty else DEFAULT_BRANCH_MAP.get(city_name, "未知分校")
-                row_data = [branch_name, city_name]
-                
-                for ct_title, cf_keyword in channel_map:
-                    if cf_keyword:
-                        if strict_online:
-                            current_ret = city_ret_df[(city_ret_df['渠道'] == '线上平台') & (city_ret_df['线上渠道'] == cf_keyword)]
-                        else:
-                            current_ret = city_ret_df[city_ret_df['渠道'] == cf_keyword]
-                    else:
-                        current_ret = city_ret_df
-                        
-                    ret_stats = self.calc_stats_retention_data(current_ret)
-                    for stat_key in ret_stats:
-                        grand_national_stats[ct_title][stat_key] += ret_stats[stat_key]
-                        
-                    row_data.extend(self.format_retention_row_list(ret_stats))
-                final_rows.append(row_data)
-                
-        elif is_prov:
-            groups = BRANCH_GROUPS
-            for group_name, branches in groups.items():
-                group_stats_accumulator = {ct[0]: {"gz":0,"sy":0,"tb":0,"ret":0} for ct in channel_map}
-                for branch_name in branches:
-                    branch_ret_df = df_ret[df_ret['分校'] == branch_name]
-                    row_data = [branch_name]
-                    
-                    for ct_title, cf_keyword in channel_map:
-                        if cf_keyword:
-                            if strict_online:
-                                current_ret = branch_ret_df[(branch_ret_df['渠道'] == '线上平台') & (branch_ret_df['线上渠道'] == cf_keyword)]
-                            else:
-                                current_ret = branch_ret_df[branch_ret_df['渠道'] == cf_keyword]
-                        else:
-                            current_ret = branch_ret_df
-                            
-                        ret_stats = self.calc_stats_retention_data(current_ret)
-                        for stat_key in ret_stats:
-                            group_stats_accumulator[ct_title][stat_key] += ret_stats[stat_key]
-                            grand_national_stats[ct_title][stat_key] += ret_stats[stat_key]
-                            
-                        row_data.extend(self.format_retention_row_list(ret_stats))
-                    final_rows.append(row_data)
-                    
-                group_summary_row = [f"{group_name}类总计"]
-                for ct_title, _ in channel_map:
-                    group_summary_row.extend(self.format_retention_row_list(group_stats_accumulator[ct_title]))
-                final_rows.append(group_summary_row)
-                
-        else:
-            all_branches = sorted(df_ret['分校'].dropna().unique())
-            for branch_name in all_branches:
-                branch_ret_df = df_ret[df_ret['分校'] == branch_name]
-                all_cities = sorted(branch_ret_df['地市'].dropna().unique())
-                
-                for city_name in all_cities:
-                    city_ret_df = branch_ret_df[branch_ret_df['地市'] == city_name]
-                    row_data = [branch_name, city_name]
-                    
-                    for ct_title, cf_keyword in channel_map:
-                        if cf_keyword:
-                            if strict_online:
-                                current_ret = city_ret_df[(city_ret_df['渠道'] == '线上平台') & (city_ret_df['线上渠道'] == cf_keyword)]
-                            else:
-                                current_ret = city_ret_df[city_ret_df['渠道'] == cf_keyword]
-                        else:
-                            current_ret = city_ret_df
-                            
-                        ret_stats = self.calc_stats_retention_data(current_ret)
-                        for stat_key in ret_stats:
-                            grand_national_stats[ct_title][stat_key] += ret_stats[stat_key]
-                            
-                        row_data.extend(self.format_retention_row_list(ret_stats))
-                    final_rows.append(row_data)
-                    
-        final_national_row = ["全国", "总计"] if not is_prov else ["全国"]
-        for ct_title, _ in channel_map:
-            final_national_row.extend(self.format_retention_row_list(grand_national_stats[ct_title]))
-        final_rows.append(final_national_row)
-        
-        self._write_wide_excel_retention_structured(output_file, final_rows, channel_map, 2 if is_prov else 3, not is_prov)
-
-    def gen_date_summary_report_standalone(self, df_dedup, d_str, output_file, is_city):
-        if not d_str.strip():
-            return
-        self.log(f"正在生成报表 [09_日期汇总]: {os.path.basename(output_file)}")
-        
-        target_dates_list = [d.strip() for d in d_str.replace('，', ',').split(',') if d.strip()]
-        filtered_df = df_dedup[df_dedup['日期'].isin(target_dates_list)]
-        group_keys_list = ['分校', '地市'] if is_city else ['分校']
-        
-        count_all = filtered_df.groupby(group_keys_list).size().reset_index(name='total')
-        count_web = filtered_df[filtered_df['线上渠道'] == '网站'].groupby(group_keys_list).size().reset_index(name='web')
-        summary_result = pd.merge(count_all, count_web, on=group_keys_list, how='left').fillna(0)
-        
-        sum_total_val = summary_result['total'].sum()
-        sum_web_val = summary_result['web'].sum()
-        
-        national_summary_dict = {col: "" for col in summary_result.columns}
-        national_summary_dict['分校'] = "全国"
-        if is_city: 
-            national_summary_dict['地市'] = "总计"
-        national_summary_dict['total'] = sum_total_val
-        national_summary_dict['web'] = sum_web_val
-        
-        summary_result = pd.concat([summary_result, pd.DataFrame([national_summary_dict])], ignore_index=True)
-        summary_result.rename(columns={'total': f"汇总({','.join(target_dates_list)})", 'web': "其中:网站"}, inplace=True)
-        
-        summary_result.to_excel(output_file, index=False)
-        self._style_excel(output_file)
-
-    # --- ★★★ 质检核心模块 6.0 最终合体版 ★★★ ---
-    def gen_quality_inspection_suite(self, df_clean, df_retention, output_file, remark_exclude, channel_exclude, qc_dates_str):
-        self.log(">>> 开始质检综合报表生成业务流...")
-        base_filename_str = os.path.splitext(output_file)[0]
-        
-        # 1. 导出表1 (纯天然底稿，不受日期限制)
-        self.log("正在提取表 1：详情明细底稿 (不受日期和业务过滤限制)...")
-        df_retention.to_csv(f"{base_filename_str}_表1_详情明细底稿.csv", index=False, encoding='utf-8-sig')
-        self.log(f"✅ 表 1 导出成功，共计 {len(df_retention)} 行。")
-
-        # 2. 准备受日期限制的数据池
-        target_retention_pool = df_retention.copy()
-        target_clean_pool = df_clean.copy()
-        
-        if qc_dates_str.strip():
-            date_list_arr = [d.strip() for d in qc_dates_str.replace('，', ',').split(',') if d.strip()]
-            target_retention_pool = target_retention_pool[target_retention_pool['日期'].isin(date_list_arr)]
-            target_clean_pool = target_clean_pool[target_clean_pool['日期'].isin(date_list_arr)]
-            self.log(f"🔍 已应用质检全局日期过滤: {date_list_arr}")
-
-        # 3. 准备虚假异常池
-        df_abnormal_pool = target_retention_pool[
-            (target_retention_pool['标备总数'] == 1) & 
-            (target_retention_pool['客户回复消息数'] == 0) & 
-            (target_retention_pool['好友添加来源'].astype(str).str.contains('扫描渠道二维码', na=False))
-        ].copy()
-        
-        if remark_exclude.strip():
-            rk_list = [k.strip() for k in remark_exclude.replace('，', ',').split(',') if k.strip()]
-            def filter_remark_fn(val):
-                return any(k in str(val) for k in rk_list)
-            df_abnormal_pool = df_abnormal_pool[~df_abnormal_pool['备注名'].apply(filter_remark_fn)]
-            
-        if channel_exclude.strip():
-            ck_list = [k.strip() for k in channel_exclude.replace('，', ',').split(',') if k.strip()]
-            def filter_channel_fn(val):
-                return any(k in str(val) for k in ck_list)
-            df_abnormal_pool = df_abnormal_pool[~df_abnormal_pool['添加渠道码'].apply(filter_channel_fn)]
-
-        # ★ 4. 导出表2 虚假明细 CSV
-        df_fake_details_final = df_abnormal_pool[df_abnormal_pool['是否同意会话存档'].astype(str).str.strip() == '同意'].copy()
-        df_fake_details_final.to_csv(f"{base_filename_str}_表2_虚假备注详情明细.csv", index=False, encoding='utf-8-sig')
-        self.log(f"✅ 表 2 (详情明细) 导出成功，共计 {len(df_fake_details_final)} 行。")
-
-        groups = BRANCH_GROUPS
-
-        def get_pct_string(a, b):
-            return f"{int(round((a/b)*100))}%" if b != 0 else "0%"
-
-        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-            self.log("正在渲染质检 Excel 看板 (包含 4 个 Sheet)...")
-            
-            # --- Sheet 1: 表2汇总 ---
-            rows_t2_list = []
-            grand_total_t2_count = 0
-            
-            for group_n, branches in groups.items():
-                group_total_count = 0
-                for b_name in branches:
-                    branch_count = len(df_fake_details_final[df_fake_details_final['分校'] == b_name])
-                    group_total_count += branch_count
-                    rows_t2_list.append([b_name, branch_count])
-                rows_t2_list.append([f"{group_n}类总计", group_total_count])
-                grand_total_t2_count += group_total_count
-                
-            rows_t2_list.append(["全国总计", grand_total_t2_count])
-            pd.DataFrame(rows_t2_list, columns=['分校', '虚假备注']).to_excel(writer, sheet_name='2_虚假备注筛选', index=False)
-
-            # --- Sheet 2: 跨分校统计 ---
-            df3_base_dedup = target_retention_pool.drop_duplicates(subset=['ExternalUserId', '分校'])
-            df3_counts_df = df3_base_dedup.groupby('ExternalUserId').size().reset_index(name='跨分校')
-            df3_counts_df.to_csv(f"{base_filename_str}_表3_加几个分校明细底稿.csv", index=False, encoding='utf-8-sig')
-            self.log("✅ 表 3 (跨分校明细) 导出成功。")
-            
-            abnormal_id_list = df3_counts_df[df3_counts_df['跨分校'] >= 10]['ExternalUserId']
-            # 回查全量客服添加数
-            df4_pool_all_adds = target_retention_pool[target_retention_pool['ExternalUserId'].isin(abnormal_id_list)]
-            
-            rows_t4_list = []
-            grand_total_t4_count = 0
-            for group_n, branches in groups.items():
-                group_total_count = 0
-                for b_name in branches:
-                    branch_count = len(df4_pool_all_adds[df4_pool_all_adds['分校'] == b_name])
-                    group_total_count += branch_count
-                    rows_t4_list.append([b_name, branch_count])
-                rows_t4_list.append([f"{group_n}类总计", group_total_count])
-                grand_total_t4_count += group_total_count
-                
-            rows_t4_list.append(["全国总计", grand_total_t4_count])
-            pd.DataFrame(rows_t4_list, columns=['分校', '添加客服量']).to_excel(writer, sheet_name='4_跨10个以上分校', index=False)
-
-            # --- Sheet 3: 会话看板 ---
-            rows_t5_list = []
-            national_acc_t5_dict = {'ret':0, 'has':0, 'no':0, 'db':0}
-            
-            for group_n, branches in groups.items():
-                group_acc_t5_dict = {'ret':0, 'has':0, 'no':0, 'db':0}
-                for b_name in branches:
-                    branch_group_df = target_retention_pool[target_retention_pool['分校'] == b_name]
-                    retention_val = len(branch_group_df)
-                    has_reply_val = (branch_group_df['客户回复消息数'] > 0).sum()
-                    
-                    # 强加同意过滤
-                    zero_reply_val = ((branch_group_df['客户回复消息数'] == 0) & (branch_group_df['是否同意会话存档'].astype(str).str.strip() == '同意')).sum()
-                    double_zero_val = ((branch_group_df['员工发送消息数'] == 0) & (branch_group_df['客户回复消息数'] == 0) & (branch_group_df['是否同意会话存档'].astype(str).str.strip() == '同意')).sum()
-                    
-                    group_acc_t5_dict['ret'] += retention_val
-                    group_acc_t5_dict['has'] += has_reply_val
-                    group_acc_t5_dict['no'] += zero_reply_val
-                    group_acc_t5_dict['db'] += double_zero_val
-                    
-                    national_acc_t5_dict['ret'] += retention_val
-                    national_acc_t5_dict['has'] += has_reply_val
-                    national_acc_t5_dict['no'] += zero_reply_val
-                    national_acc_t5_dict['db'] += double_zero_val
-                    
-                    rows_t5_list.append([
-                        b_name, retention_val, has_reply_val, zero_reply_val, 
-                        get_pct_string(zero_reply_val, retention_val), 
-                        double_zero_val, 
-                        get_pct_string(double_zero_val, retention_val)
-                    ])
-                    
-                rows_t5_list.append([
-                    f"{group_n}类总计", group_acc_t5_dict['ret'], group_acc_t5_dict['has'], group_acc_t5_dict['no'], 
-                    get_pct_string(group_acc_t5_dict['no'], group_acc_t5_dict['ret']), 
-                    group_acc_t5_dict['db'], 
-                    get_pct_string(group_acc_t5_dict['db'], group_acc_t5_dict['ret'])
-                ])
-                
-            rows_t5_list.append([
-                "全国总计", national_acc_t5_dict['ret'], national_acc_t5_dict['has'], national_acc_t5_dict['no'], 
-                get_pct_string(national_acc_t5_dict['no'], national_acc_t5_dict['ret']), 
-                national_acc_t5_dict['db'], 
-                get_pct_string(national_acc_t5_dict['db'], national_acc_t5_dict['ret'])
-            ])
-            pd.DataFrame(rows_t5_list, columns=['分校', '留存量', '客户有会话', '客户0会话', '客户0会话率', '双向无会话', '双向无会话率']).to_excel(writer, sheet_name='5_会话情况', index=False)
-
-            # --- Sheet 4: 来源分布 ---
-            source_names_list = ["获客助手", "名片分享", "其他", "群聊", "扫描名片二维码", "扫描渠道二维码", "搜索手机号", "微信联系人", "未知"]
-            rows_t6_list = []
-            national_acc_t6_dict = {s: 0 for s in source_names_list}
-            
-            for group_n, branches in groups.items():
-                group_acc_t6_dict = {s: 0 for s in source_names_list}
-                for b_name in branches:
-                    branch_group_df = target_clean_pool[target_clean_pool['分校'] == b_name]
-                    value_counts_dict = branch_group_df['好友添加来源'].fillna('未知').apply(lambda x: x if x in source_names_list else '其他').value_counts().to_dict()
-                    
-                    branch_counts_list = [value_counts_dict.get(s, 0) for s in source_names_list]
-                    branch_total_sum = sum(branch_counts_list)
-                    
-                    branch_pcts_list = [get_pct_string(c, branch_total_sum) for c in branch_counts_list]
-                    rows_t6_list.append([b_name] + branch_counts_list + [branch_total_sum] + [b_name] + branch_pcts_list + [branch_total_sum])
-                    
-                    for i, s_name in enumerate(source_names_list):
-                        group_acc_t6_dict[s_name] += branch_counts_list[i]
-                        national_acc_t6_dict[s_name] += branch_counts_list[i]
-                
-                group_counts_list = [group_acc_t6_dict[s] for s in source_names_list]
-                group_total_sum = sum(group_counts_list)
-                group_pcts_list = [get_pct_string(c, group_total_sum) for c in group_counts_list]
-                rows_t6_list.append([f"{group_n}类总计"] + group_counts_list + [group_total_sum] + [f"{group_n}类总计"] + group_pcts_list + [group_total_sum])
-            
-            national_counts_list = [national_acc_t6_dict[s] for s in source_names_list]
-            national_total_sum = sum(national_counts_list)
-            national_pcts_list = [get_pct_string(c, national_total_sum) for c in national_counts_list]
-            rows_t6_list.append(["全国总计"] + national_counts_list + [national_total_sum] + ["全国总计"] + national_pcts_list + [national_total_sum])
-            
-            headers_t6 = ["分校"] + source_names_list + ["总计"] + ["分校"] + source_names_list + ["总计"]
-            pd.DataFrame(rows_t6_list, columns=headers_t6).to_excel(writer, sheet_name='6_好友添加来源', index=False)
-
-        self._style_excel(output_file)
-        self.log("🎯 质检汇总分析看板生成完毕！所有任务处理成功。")
-
-    # --- 辅助样式渲染 (保持 4.0 完整合并逻辑) ---
-    def _write_wide_excel_structured(self, output_file, rows, channel_map, start_col_idx, has_city_col):
-        sub_headers_list = ["新增好友", "本月分校内去重", "净新增", "重复率", "公职标备", "事业标备", "其他标备", "标备总量", "标备率", "回话备注", "回话备注率"]
-        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-            pd.DataFrame(rows).to_excel(writer, index=False, header=False, startrow=2)
-            worksheet = writer.sheets['Sheet1']
-            worksheet['A1'] = "分校"
-            worksheet.merge_cells('A1:A2')
-            if has_city_col:
-                worksheet['B1'] = "地市"
-                worksheet.merge_cells('B1:B2')
-                
-            current_col_idx = start_col_idx
-            for ct_name, _ in channel_map:
-                worksheet.cell(row=1, column=current_col_idx).value = ct_name
-                for sub_header in sub_headers_list:
-                    worksheet.cell(row=2, column=current_col_idx).value = sub_header
-                    current_col_idx += 1
-                worksheet.merge_cells(start_row=1, start_column=current_col_idx-len(sub_headers_list), end_row=1, end_column=current_col_idx-1)
-                
-            # ★ 纵向合并单元格逻辑
-            if has_city_col:
-                max_row_num = worksheet.max_row
-                current_branch_name = worksheet['A3'].value
-                start_row_num = 3
-                for r in range(4, max_row_num + 2):
-                    cell_val = worksheet[f'A{r}'].value if r <= max_row_num else None
-                    if cell_val != current_branch_name:
-                        if start_row_num < r - 1:
-                            worksheet.merge_cells(f'A{start_row_num}:A{r-1}')
-                        current_branch_name = cell_val
-                        start_row_num = r
-                        
-            self._style_excel_ws(worksheet)
-
-    def _write_wide_excel_retention_structured(self, output_file, rows, channel_map, start_col_idx, has_city_col):
-        sub_headers_list = ["留存量", "公职标备", "事业标备", "其他标备", "标备总量", "标备率"]
-        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-            pd.DataFrame(rows).to_excel(writer, index=False, header=False, startrow=2)
-            worksheet = writer.sheets['Sheet1']
-            worksheet['A1'] = "分校"
-            worksheet.merge_cells('A1:A2')
-            if has_city_col:
-                worksheet['B1'] = "地市"
-                worksheet.merge_cells('B1:B2')
-                
-            current_col_idx = start_col_idx
-            for ct_name, _ in channel_map:
-                worksheet.cell(row=1, column=current_col_idx).value = ct_name
-                for sub_header in sub_headers_list:
-                    worksheet.cell(row=2, column=current_col_idx).value = sub_header
-                    current_col_idx += 1
-                worksheet.merge_cells(start_row=1, start_column=current_col_idx-len(sub_headers_list), end_row=1, end_column=current_col_idx-1)
-                
-            if has_city_col:
-                max_row_num = worksheet.max_row
-                current_branch_name = worksheet['A3'].value
-                start_row_num = 3
-                for r in range(4, max_row_num + 2):
-                    cell_val = worksheet[f'A{r}'].value if r <= max_row_num else None
-                    if cell_val != current_branch_name:
-                        if start_row_num < r - 1:
-                            worksheet.merge_cells(f'A{start_row_num}:A{r-1}')
-                        current_branch_name = cell_val
-                        start_row_num = r
-                        
-            self._style_excel_ws(worksheet)
-
-    def _style_excel(self, path):
-        try:
-            wb = load_workbook(path)
-            for sheet_name in wb.sheetnames:
-                self._style_excel_ws(wb[sheet_name])
-            wb.save(path)
-        except Exception as e:
-            self.log(f"样式渲染跳过 (文件可能被占用): {str(e)}")
-
-    def _style_excel_ws(self, worksheet):
-        thin_border = Side(border_style="thin", color="000000")
-        full_border = Border(top=thin_border, left=thin_border, right=thin_border, bottom=thin_border)
-        center_align = Alignment(horizontal="center", vertical="center")
-        
-        for row in worksheet.iter_rows():
-            for cell in row:
-                cell.border = full_border
-                cell.alignment = center_align
-                
-        for row in worksheet.iter_rows(min_row=1, max_row=2):
-            for cell in row:
-                cell.font = Font(bold=True)
-                cell.fill = PatternFill(start_color="EEEEEE", end_color="EEEEEE", fill_type="solid")
-                
-        worksheet.column_dimensions['A'].width = 18
-        if worksheet['B1'].value == '地市':
-            worksheet.column_dimensions['B'].width = 15
-
-# ==============================================================================
-# GUI 界面 (分离式业务流设计)
-# ==============================================================================
-class App:
+class ExcelInspectorApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("数据自动化统计工具 6.2")
-        self.root.geometry("980x520")
-        self.root.configure(bg="#f8f9fa")
+        self.root.title("数据源表质量巡检工具 v5.1 (完美工作站)")
+        self.root.geometry("1000x650")
+        
+        self.file_path = ""
+        self.is_running = False
+        
+        self.setup_ui()
 
-        ui_style = ttk.Style()
-        ui_style.theme_use('clam')
-        ui_style.configure('TNotebook.Tab', font=("Microsoft YaHei", 10, "bold"), padding=[15, 5])
-        
-        tk.Label(root, text="🚀 数据自动化统计工具 6.2 (添加日期选择功能)", font=("Microsoft YaHei", 15, "bold"), bg="#007bff", fg="white").pack(fill="x", pady=0, ipady=10)
-        
-        main_container = tk.Frame(root, bg="#f8f9fa")
-        main_container.pack(fill="both", expand=True, padx=15, pady=10)
-        
-        left_panel = tk.Frame(main_container, bg="#f8f9fa")
-        left_panel.pack(side="left", fill="both", expand=True)
-        
-        right_panel = tk.Frame(main_container, bg="#f8f9fa", width=350)
-        right_panel.pack(side="right", fill="y", padx=(15, 0))
-        right_panel.pack_propagate(False)
+    def setup_ui(self):
+        self.root.grid_columnconfigure(1, weight=1)
+        self.root.grid_rowconfigure(0, weight=1)
 
-        self.notebook = ttk.Notebook(left_panel)
-        self.notebook.pack(fill="both", expand=True)
-        
-        self.tab_import = ttk.Frame(self.notebook)
-        self.tab_regular = ttk.Frame(self.notebook)
-        self.tab_qc = ttk.Frame(self.notebook)
-        
-        self.notebook.add(self.tab_import, text=" 📂 数据导入 ")
-        self.notebook.add(self.tab_regular, text=" 📈 常规报表 ")
-        self.notebook.add(self.tab_qc, text=" 📊 质检分析 ")
+        # ================= 左侧操作区 =================
+        left_frame = ctk.CTkFrame(self.root, width=320, corner_radius=15)
+        left_frame.grid(row=0, column=0, padx=15, pady=15, sticky="nsew")
+        left_frame.grid_propagate(False)
 
-        # --- 标签页 1：导入 ---
-        step1_frame = ttk.LabelFrame(self.tab_import, text=" 步骤 1：导入源文件 ")
-        step1_frame.pack(fill="x", pady=20, padx=15, ipady=15)
-        
-        self.ent_file = ttk.Entry(step1_frame)
-        self.ent_file.pack(side="left", fill="x", expand=True, padx=10)
-        
-        ttk.Button(step1_frame, text="📂 浏览文件", command=self.browse, width=12).pack(side="right", padx=10)
+        title_label = ctk.CTkLabel(left_frame, text="⚙️ 巡检参数配置", font=("微软雅黑", 20, "bold"))
+        title_label.pack(pady=(20, 20))
 
-        # --- 标签页 2：常规报表 ---
-        step2_frame = ttk.LabelFrame(self.tab_regular, text=" 参数设置 ")
-        step2_frame.pack(fill="x", pady=10, padx=10)
-        
-        param_frame = ttk.Frame(step2_frame)
-        param_frame.pack(fill="x", padx=10, pady=5)
-        ttk.Label(param_frame, text="📅 判断月份:").pack(side="left")
-        self.ent_month = ttk.Entry(param_frame, width=15)
-        current_ym = datetime.date.today().strftime("%Y-%m")
-        self.ent_month.insert(0, current_ym)
-        self.ent_month.pack(side="left", padx=5)
-        
-        ttk.Label(param_frame, text="📆 特定日期:").pack(side="left")
-        self.ent_date = ttk.Entry(param_frame)
-        self.ent_date.pack(side="left", fill="x", expand=True, padx=5)
-        
-        # 新增：日期选择器按钮（常规报表）
-        self.btn_date_picker = ttk.Button(param_frame, text="📅 选择区间", command=lambda: self.open_date_range_picker(self.ent_date))
-        self.btn_date_picker.pack(side="left", padx=(0, 5))
-        
-        step3_frame = ttk.LabelFrame(self.tab_regular, text=" 常规任务选择 ")
-        step3_frame.pack(fill="x", pady=5, padx=10)
-        
-        self.var_retention = tk.BooleanVar()
-        self.var_prov_long = tk.BooleanVar()
-        self.var_prov_wide = tk.BooleanVar()
-        self.var_city_long = tk.BooleanVar()
-        self.var_city_wide = tk.BooleanVar()
-        self.var_special = tk.BooleanVar()
-        
-        ttk.Checkbutton(step3_frame, text="同时生成“留存版”关联报表", variable=self.var_retention).pack(anchor="w", padx=15)
-        
-        grid_container = ttk.Frame(step3_frame)
-        grid_container.pack(fill="x", padx=15, pady=2)
-        ttk.Checkbutton(grid_container, text="01_省份一维表", variable=self.var_prov_long).grid(row=0, column=0, sticky="w", pady=5)
-        ttk.Checkbutton(grid_container, text="02_省份宽表", variable=self.var_prov_wide).grid(row=0, column=1, sticky="w", pady=5)
-        ttk.Checkbutton(grid_container, text="04_地市一维表", variable=self.var_city_long).grid(row=1, column=0, sticky="w", pady=5)
-        ttk.Checkbutton(grid_container, text="05_地市宽表", variable=self.var_city_wide).grid(row=1, column=1, sticky="w", pady=5)
-        ttk.Checkbutton(grid_container, text="★ 单独地市专项报表", variable=self.var_special).grid(row=2, column=0, columnspan=2, sticky="w", pady=5)
-        
-        self.btn_regular = ttk.Button(self.tab_regular, text="📈 执行常规任务", command=lambda: self.run_task('regular'))
-        self.btn_regular.pack(side="bottom", fill="x", pady=10, padx=15, ipady=8)
+        ctk.CTkLabel(left_frame, text="1. 选择源表 (.xlsx)", font=("微软雅黑", 14, "bold")).pack(anchor="w", padx=20, pady=(0, 5))
+        self.btn_select = ctk.CTkButton(left_frame, text="上传源表文件", command=self.select_file, height=40)
+        self.btn_select.pack(fill="x", padx=20)
+        self.lbl_file = ctk.CTkLabel(left_frame, text="未选择文件", text_color="gray", font=("微软雅黑", 12))
+        self.lbl_file.pack(anchor="w", padx=20, pady=(5, 15))
 
-        # --- 标签页 3：质检分析 ---
-        step4_frame = ttk.LabelFrame(self.tab_qc, text=" 质检规则配置 ")
-        step4_frame.pack(fill="both", expand=True, pady=10, padx=10)
+        ctk.CTkLabel(left_frame, text="2. 屏蔽关键词配置", font=("微软雅黑", 14, "bold")).pack(anchor="w", padx=20, pady=(0, 5))
+        self.txt_keywords = ctk.CTkTextbox(left_frame, height=180, font=("微软雅黑", 12))
+        self.txt_keywords.pack(fill="x", padx=20, pady=(0, 15))
         
-        qc_f0 = ttk.Frame(step4_frame)
-        qc_f0.pack(fill="x", padx=15, pady=6)
-        ttk.Label(qc_f0, text="📆 独立过滤日期:").pack(side="left")
-        self.ent_qc_date = ttk.Entry(qc_f0)
-        self.ent_qc_date.pack(side="left", fill="x", expand=True, padx=5)
+        default_keywords = "初审,一审,二审,三审,复审,终审,上一页,下一页,上一篇,下一篇,上页,下页,上篇,下篇,打印按钮,无障碍阅读,扫一扫,下载DOC,关闭窗口"
+        self.txt_keywords.insert("0.0", default_keywords.replace(",", "\n"))
+
+        ctk.CTkLabel(left_frame, text="3. 正文最小字数", font=("微软雅黑", 14, "bold")).pack(anchor="w", padx=20, pady=(0, 5))
+        self.ent_min_words = ctk.CTkEntry(left_frame, height=40)
+        self.ent_min_words.insert(0, "50")
+        self.ent_min_words.pack(fill="x", padx=20, pady=(0, 20))
+
+        self.btn_start = ctk.CTkButton(left_frame, text="▶ 开始生成审核工作站", font=("微软雅黑", 15, "bold"), 
+                                       command=self.start_inspection, height=45, fg_color="#2FA572", hover_color="#1F7A54")
+        self.btn_start.pack(fill="x", side="bottom", padx=20, pady=20)
+
+        # ================= 右侧日志区 =================
+        right_frame = ctk.CTkFrame(self.root, corner_radius=15, fg_color="transparent")
+        right_frame.grid(row=0, column=1, padx=(0, 15), pady=15, sticky="nsew")
+
+        ctk.CTkLabel(right_frame, text="🖥️ 运行日志", font=("微软雅黑", 18, "bold")).pack(anchor="w", pady=(0, 10))
         
-        # 新增：日期选择器按钮（质检过滤）
-        self.btn_qc_date_picker = ttk.Button(qc_f0, text="📅 选择区间", command=lambda: self.open_date_range_picker(self.ent_qc_date))
-        self.btn_qc_date_picker.pack(side="left", padx=(0, 5))
-        
-        qc_f1 = ttk.Frame(step4_frame)
-        qc_f1.pack(fill="x", padx=15, pady=6)
-        ttk.Label(qc_f1, text="🚫 备注名排除词:").pack(side="left")
-        self.ent_qc_rem = ttk.Entry(qc_f1)
-        self.ent_qc_rem.insert(0, "学26,学27,报26,课26,前台,到店,报27,课27")
-        self.ent_qc_rem.pack(side="left", fill="x", expand=True, padx=5)
-        
-        qc_f2 = ttk.Frame(step4_frame)
-        qc_f2.pack(fill="x", padx=15, pady=6)
-        ttk.Label(qc_f2, text="🚫 渠道码排除词:").pack(side="left")
-        self.ent_qc_ch = ttk.Entry(qc_f2)
-        self.ent_qc_ch.insert(0, "前台,到店")
-        self.ent_qc_ch.pack(side="left", fill="x", expand=True, padx=5)
-        
-        self.btn_qc_analysis = ttk.Button(self.tab_qc, text="🎯 执行质检分析", command=lambda: self.run_task('qc'))
-        self.btn_qc_analysis.pack(side="bottom", fill="x", pady=10, padx=15, ipady=8)
-
-        # --- 右侧：暗黑日志栏 ---
-        log_container = ttk.LabelFrame(right_panel, text=" 实时运行日志 ")
-        log_container.pack(fill="both", expand=True)
-        self.log_text_box = scrolledtext.ScrolledText(log_container, font=("Consolas", 9), bg="#1e1e1e", fg="#d4d4d4", relief="flat")
-        self.log_text_box.pack(fill="both", expand=True, padx=2, pady=2)
-
-    # ==============================================================================
-    # 新增：双日历区间选择器核心逻辑
-    # ==============================================================================
-    def open_date_range_picker(self, target_entry):
-        if not HAS_TKCALENDAR:
-            messagebox.showwarning("缺少组件", "检测到未安装日历组件。\n\n请打开CMD命令行或终端，输入：\npip install tkcalendar\n安装后重启软件即可使用此功能！")
-            return
-
-        top = tk.Toplevel(self.root)
-        top.title("选择日期区间")
-       # 获取输入框在屏幕上的绝对坐标，并将弹窗定位在输入框正下方5个像素处
-        x = target_entry.winfo_rootx()
-        y = target_entry.winfo_rooty() + target_entry.winfo_height() + 5
-        top.geometry(f"580x280+{x}+{y}")
-        top.resizable(False, False)
-        top.grab_set()  # 模态窗口，阻断其他操作
-
-        main_frame = tk.Frame(top, padx=10, pady=10)
-        main_frame.pack(fill="both", expand=True)
-
-        # 左侧：开始日期
-        left_frame = tk.Frame(main_frame)
-        left_frame.pack(side="left", fill="both", expand=True, padx=5)
-        tk.Label(left_frame, text="🛫 选择开始日期:", font=("Microsoft YaHei", 10, "bold")).pack(pady=5)
-        cal_start = Calendar(left_frame, selectmode='day', date_pattern='yyyy-mm-dd')
-        cal_start.pack(fill="both", expand=True)
-
-        # 右侧：结束日期
-        right_frame = tk.Frame(main_frame)
-        right_frame.pack(side="right", fill="both", expand=True, padx=5)
-        tk.Label(right_frame, text="🛬 选择结束日期:", font=("Microsoft YaHei", 10, "bold")).pack(pady=5)
-        cal_end = Calendar(right_frame, selectmode='day', date_pattern='yyyy-mm-dd')
-        cal_end.pack(fill="both", expand=True)
-
-        # 确认与取消操作
-        def on_confirm():
-            start_date = cal_start.selection_get()
-            end_date = cal_end.selection_get()
-            
-            # 自动防呆纠错：如果开始日期大于结束日期，自动调换
-            if start_date > end_date:
-                start_date, end_date = end_date, start_date
-
-            # 计算两个日期之间的所有天数 (包含头尾)
-            delta = end_date - start_date
-            date_list = []
-            for i in range(delta.days + 1):
-                current_date = start_date + datetime.timedelta(days=i)
-                # 严格按照要求：m月d日，不补零，无空格
-                date_list.append(f"{current_date.month}月{current_date.day}日")
-                
-            generated_str = ",".join(date_list)
-            
-            # 读取当前输入框内容并智能拼接
-            current_text = target_entry.get().strip()
-            if current_text:
-                # 避免出现连号逗号
-                if not current_text.endswith(','):
-                    current_text += ","
-                final_text = current_text + generated_str
-            else:
-                final_text = generated_str
-                
-            target_entry.delete(0, tk.END)
-            target_entry.insert(0, final_text)
-            top.destroy()
-
-        btn_frame = tk.Frame(top)
-        btn_frame.pack(side="bottom", fill="x", pady=10)
-        ttk.Button(btn_frame, text="取消", command=top.destroy).pack(side="right", padx=15)
-        ttk.Button(btn_frame, text="✅ 确定生成", command=on_confirm).pack(side="right", padx=5)
+        self.log_area = ctk.CTkTextbox(right_frame, font=("Consolas", 13), fg_color="#1E1E1E", text_color="#00FF00")
+        self.log_area.pack(fill="both", expand=True)
+        self.log_area.configure(state="disabled")
 
     def log(self, message):
-        """写入日志并强制刷新 UI，防止卡死"""
-        self.log_text_box.config(state='normal')
-        self.log_text_box.insert(tk.END, f"[{time.strftime('%H:%M:%S')}] {message}\n")
-        self.log_text_box.see(tk.END)
-        self.log_text_box.config(state='disabled')
-        self.root.update_idletasks()
+        def append():
+            self.log_area.configure(state="normal")
+            time_str = time.strftime("[%H:%M:%S] ")
+            self.log_area.insert("end", time_str + message + "\n")
+            self.log_area.see("end")
+            self.log_area.configure(state="disabled")
+        self.root.after(0, append)
 
-    def browse(self):
-        selected_files = filedialog.askopenfilenames(filetypes=[("Excel/CSV", "*.xlsx *.xls *.csv")])
-        if selected_files:
-            self.ent_file.delete(0, tk.END)
-            self.ent_file.insert(0, ";".join(selected_files))
+    def select_file(self):
+        file = filedialog.askopenfilename(filetypes=[("Excel Files", "*.xlsx")])
+        if file:
+            self.file_path = file
+            filename = os.path.basename(file)
+            self.lbl_file.configure(text=filename, text_color="#2FA572")
+            self.log(f"✅ 已成功导入源表: {filename}")
 
-    def run_task(self, task_name):
-        threading.Thread(target=self.process_logic, args=(task_name,), daemon=True).start()
-
-    def process_logic(self, task_type):
-        files_paths = self.ent_file.get().split(";")
-        if not files_paths or files_paths[0] == "":
-            return messagebox.showerror("错误", "请先在第一页选择数据文件！")
+    def start_inspection(self):
+        if not self.file_path:
+            messagebox.showwarning("提示", "请先在左侧上传源表文件！")
+            return
+        if self.is_running: return
             
-        start_timestamp = time.time()
-        
-        # 按钮锁定状态
-        self.btn_regular.config(state="disabled")
-        self.btn_qc_analysis.config(state="disabled")
-        
-        self.log_text_box.config(state='normal')
-        self.log_text_box.delete(1.0, tk.END)
-        self.log_text_box.config(state='disabled')
-        
         try:
-            processor_obj = UniversalProcessor(self.log)
-            self.log(f"引擎启动，准备读取 {len(files_paths)} 个文件...")
-            
-            data_frames_list = []
-            for f_path in files_paths:
-                clean_path = f_path.strip()
-                if clean_path.lower().endswith('.csv'):
-                    data_frames_list.append(pd.read_csv(clean_path, encoding='utf-8-sig'))
-                else:
-                    data_frames_list.append(pd.read_excel(clean_path)) # 恢复基础引擎，确保最强兼容性
-                    
-            full_source_dataframe = pd.concat(data_frames_list, ignore_index=True)
-            self.log(f"成功载入数据：{len(full_source_dataframe)} 行。")
-            
-            clean_df, dedup_prov_df, dedup_city_df, retention_df = processor_obj.process_step1(full_source_dataframe, self.ent_month.get(), "")
-            
-            base_directory = os.path.dirname(files_paths[0])
-            base_filename = os.path.splitext(os.path.basename(files_paths[0]))[0]
+            min_words = int(self.ent_min_words.get().strip())
+        except ValueError:
+            messagebox.showerror("错误", "最小字数必须是整数！")
+            return
 
-            if task_type == 'regular':
-                # 常规业务流
-                dedup_city_df.to_csv(os.path.join(base_directory, f"{base_filename}_00_源数据备份.csv"), index=False, encoding='utf-8-sig')
+        kw_text = self.txt_keywords.get("0.0", "end").replace(",", "\n")
+        keywords = [k.strip() for k in kw_text.split('\n') if k.strip()]
+
+        self.is_running = True
+        self.btn_start.configure(state="disabled", text="⏳ 正在执行中...", fg_color="gray")
+        self.log_area.configure(state="normal")
+        self.log_area.delete("0.0", "end")
+        self.log_area.configure(state="disabled")
+        
+        self.log("="*40)
+        self.log("🚀 开始巡检与生成审核工作站")
+        self.log("="*40)
+        
+        threading.Thread(target=self.process_excel, args=(self.file_path, keywords, min_words), daemon=True).start()
+
+    def generate_html_reader(self, save_path, html_data_list):
+        """生成带联动逻辑与动态报错框的终极工作站"""
+        json_data = json.dumps(html_data_list, ensure_ascii=False)
+        
+        html_template = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>沉浸式审核工作站</title>
+    <style>
+        body {{ margin: 0; padding: 0; background-color: #F0F2F5; font-family: 'Microsoft YaHei', sans-serif; color: #333; overflow: hidden; }}
+        
+        .header {{ position: fixed; top: 0; width: 100%; height: 60px; background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.05); display: flex; justify-content: space-between; align-items: center; padding: 0 30px; box-sizing: border-box; z-index: 1000; }}
+        .progress-box {{ font-size: 16px; font-weight: bold; color: #2FA572; }}
+        .jump-box input {{ width: 50px; text-align: center; padding: 4px; border: 1px solid #ddd; border-radius: 4px; outline: none; margin: 0 5px; }}
+        .jump-box button {{ padding: 5px 10px; background: #2FA572; color: #fff; border: none; border-radius: 4px; cursor: pointer; }}
+        .export-btn {{ padding: 8px 20px; background: #E67E22; color: #fff; font-weight: bold; border: none; border-radius: 4px; cursor: pointer; font-size: 15px; }}
+        .export-btn:hover {{ background: #D35400; }}
+
+        .main-container {{ display: flex; margin-top: 60px; height: calc(100vh - 60px); }}
+
+        /* 左侧表单栏 */
+        .sidebar {{ width: 350px; background: #fff; box-shadow: 2px 0 8px rgba(0,0,0,0.05); padding: 20px; overflow-y: auto; display: flex; flex-direction: column; }}
+        .sidebar h3 {{ margin-top: 0; margin-bottom: 20px; font-size: 18px; color: #2C3E50; border-bottom: 2px solid #2FA572; padding-bottom: 10px; }}
+        
+        .form-group {{ margin-bottom: 18px; }}
+        .form-group label {{ display: block; font-weight: bold; font-size: 13px; color: #555; margin-bottom: 5px; }}
+        .form-group input, .form-group textarea, .form-group select {{ width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; font-family: inherit; font-size: 14px; outline: none; }}
+        .form-group input:focus, .form-group textarea:focus, .form-group select:focus {{ border-color: #2FA572; }}
+        .form-group textarea {{ resize: vertical; height: 70px; }}
+        
+        /* 错误提示框样式 (核心修改) */
+        .hint-text {{ font-size: 12px; color: #E74C3C; margin-top: 5px; display: none; }}
+        .error-border {{ border: 2px solid #E74C3C !important; background-color: #FDEDEC !important; }}
+
+        /* 右侧阅读区 */
+        .content-area {{ flex: 1; padding: 30px; overflow-y: auto; background-color: #F4F6F8; position: relative; }}
+        /* 宽度100%，占满空间 */
+        .article-card {{ max-width: 100%; margin: 0 auto; background: #fff; padding: 40px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border-radius: 8px; min-height: 100%; }}
+        
+        .article-info {{ font-size: 13px; color: #666; margin-bottom: 20px; text-align: center; background: #f9f9f9; padding: 10px; border-radius: 6px; border: 1px dashed #ccc; }}
+        .article-info a {{ color: #2FA572; text-decoration: none; margin: 0 8px; font-weight: bold; }}
+        .article-info a:hover {{ text-decoration: underline; }}
+        
+        .article-title {{ font-size: 22px; font-weight: bold; text-align: center; margin-bottom: 25px; color: #222; line-height: 1.4; }}
+        .article-content {{ font-size: 14px; line-height: 1.4; color: #444; white-space: pre-wrap; word-wrap: break-word; }}
+        br {{ display: none; }}
+        
+        .tips {{ text-align: center; color: #999; font-size: 13px; margin-top: 30px; }}
+        kbd {{ background-color: #eee; border-radius: 3px; border: 1px solid #b4b4b4; padding: 2px 4px; font-weight: bold; }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="progress-box">当前阅读: <span id="current-idx">1</span> / <span id="total-idx">?</span> 篇</div>
+        <div class="jump-box">
+            跳转至 <input type="number" id="jump-input" min="1" value="1"> 
+            <button onclick="jump()">GO</button>
+        </div>
+        <button class="export-btn" onclick="exportToCSV()">📥 导出审核结果 (CSV)</button>
+    </div>
+
+    <div class="main-container">
+        <!-- 左侧审核表单 -->
+        <div class="sidebar">
+            <h3>📝 人工审核面板</h3>
+            
+            <div class="form-group">
+                <label>1. 网站名称</label>
+                <!-- 实时触发 oninput 记录状态 -->
+                <input type="text" id="f_site" oninput="updateData()">
+            </div>
+            
+            <div class="form-group">
+                <label>2. 网站类型</label>
+                <input type="text" id="f_type" oninput="updateData()">
+                <div class="hint-text" id="h_type">⚠️ 网站名称包含特殊信息</div>
+            </div>
+
+            <div class="form-group">
+                <label>3. 名称是否正确</label>
+                <select id="f_name_ok" onchange="handleNameOkChange()">
+                    <option value="是">是</option>
+                    <option value="否">否</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label>4. 名称修正</label>
+                <input type="text" id="f_name_fix" oninput="updateData()">
+            </div>
+
+            <div class="form-group">
+                <label>5. 选择器是否正确</label>
+                <select id="f_selector" onchange="handleSelectorOkChange()">
+                    <option value="是">是</option>
+                    <option value="否">否</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label>6. 备注</label>
+                <textarea id="f_remark" oninput="updateData()"></textarea>
+                <div class="hint-text" id="h_remark" style="color: #E67E22;">🔍 需要人为查验填写</div>
+            </div>
+        </div>
+
+        <!-- 右侧正文区域 -->
+        <div class="content-area" id="scroll-area">
+            <div class="article-card">
+                <div class="article-info" id="article-info">链接加载中...</div>
+                <div class="article-title" id="article-title">标题加载中...</div>
+                <div class="article-content" id="article-content">正文加载中...</div>
+                <div class="tips">操作提示：编辑完左侧表单后，按键盘 <kbd>←</kbd> 上一篇 ， 按 <kbd>→</kbd> 下一篇</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const articles = {json_data};
+        let currentIndex = 0;
+        document.getElementById('total-idx').innerText = articles.length;
+
+        // 实时保存用户输入到内存 (完美解决第一篇被覆盖的Bug)
+        function updateData() {{
+            if(articles.length === 0) return;
+            let item = articles[currentIndex].audit;
+            item.site = document.getElementById('f_site').value;
+            item.type = document.getElementById('f_type').value;
+            item.name_ok = document.getElementById('f_name_ok').value;
+            item.name_fix = document.getElementById('f_name_fix').value;
+            item.selector = document.getElementById('f_selector').value;
+            item.remark = document.getElementById('f_remark').value;
+            
+            updateUIStyles(); // 每次打字都会实时判定红框
+        }}
+
+        // 联动功能：名称是否正确变更是，清空修正内容
+        function handleNameOkChange() {{
+            if (document.getElementById('f_name_ok').value === '是') {{
+                document.getElementById('f_name_fix').value = '';
+            }}
+            updateData();
+        }}
+
+        // 联动功能：选择器是否正确变更是，清空备注
+        function handleSelectorOkChange() {{
+            if (document.getElementById('f_selector').value === '是') {{
+                document.getElementById('f_remark').value = '';
+            }}
+            updateData();
+        }}
+
+        // 动态样式逻辑：根据各种值给输入框加红框
+        function updateUIStyles() {{
+            const elNameOk = document.getElementById('f_name_ok');
+            const elNameFix = document.getElementById('f_name_fix');
+            const elSelectorOk = document.getElementById('f_selector');
+            const elRemark = document.getElementById('f_remark');
+            
+            // 下拉框为否 -> 红框
+            elNameOk.value === '否' ? elNameOk.classList.add('error-border') : elNameOk.classList.remove('error-border');
+            elSelectorOk.value === '否' ? elSelectorOk.classList.add('error-border') : elSelectorOk.classList.remove('error-border');
+            
+            // 文本框有内容 -> 红框
+            elNameFix.value.trim() !== '' ? elNameFix.classList.add('error-border') : elNameFix.classList.remove('error-border');
+            elRemark.value.trim() !== '' ? elRemark.classList.add('error-border') : elRemark.classList.remove('error-border');
+
+            // 实时更新右侧顶部的【来源】名字
+            const item = articles[currentIndex];
+            let displaySite = document.getElementById('f_site').value || "未知";
+            let main_link = item.main_url ? `<a href="${{item.main_url}}" target="_blank">首页: ${{displaySite}}</a>` : `<span>首页: ${{displaySite}}(无链接)</span>`;
+            let list_link = item.list_url ? `<a href="${{item.list_url}}" target="_blank">📄 公告列表页</a>` : `<span style="color:#aaa;">📄 公告列表页(无)</span>`;
+            let detail_link = item.detail_url ? `<a href="${{item.detail_url}}" target="_blank">🔗 当前文章页</a>` : `<span style="color:#aaa;">🔗 当前文章页(无)</span>`;
+            document.getElementById('article-info').innerHTML = main_link + " | " + list_link + " | " + detail_link;
+        }}
+
+        // 渲染指定文章的函数
+        function render(index) {{
+            if (index < 0) index = 0;
+            if (index >= articles.length) index = articles.length - 1;
+            currentIndex = index;
+            const item = articles[currentIndex];
+
+            // 更新进度
+            document.getElementById('current-idx').innerText = currentIndex + 1;
+            document.getElementById('jump-input').value = currentIndex + 1;
+            
+            // 从内存回填表单
+            document.getElementById('f_site').value = item.audit.site;
+            document.getElementById('f_type').value = item.audit.type;
+            document.getElementById('f_name_ok').value = item.audit.name_ok;
+            document.getElementById('f_name_fix').value = item.audit.name_fix;
+            document.getElementById('f_selector').value = item.audit.selector;
+            document.getElementById('f_remark').value = item.audit.remark;
+            
+            // 类型特殊报错
+            let f_type = document.getElementById('f_type');
+            if (item.flags.is_special) {{
+                f_type.classList.add("error-border");
+                document.getElementById('h_type').style.display = "block";
+            }} else {{
+                f_type.classList.remove("error-border");
+                document.getElementById('h_type').style.display = "none";
+            }}
+
+            // 底部报错提示语
+            if (item.flags.has_error) {{
+                document.getElementById('h_remark').style.display = "block";
+            }} else {{
+                document.getElementById('h_remark').style.display = "none";
+            }}
+
+            // 填充正文内容
+            document.getElementById('article-title').innerText = item.title || "无标题";
+            document.getElementById('article-content').innerText = item.content || "【未提取到正文内容】";
+
+            updateUIStyles(); // 渲染完立即判定一遍红框
+            document.getElementById('scroll-area').scrollTop = 0; // 滚动回顶
+        }}
+
+        // 键盘翻页监听
+        document.addEventListener('keydown', function(event) {{
+            // 防误触：在输入框内按左右键不翻页
+            if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA' || event.target.tagName === 'SELECT') return;
+            if (event.key === "ArrowRight") render(currentIndex + 1);
+            else if (event.key === "ArrowLeft") render(currentIndex - 1);
+        }});
+
+        function jump() {{
+            let val = parseInt(document.getElementById('jump-input').value);
+            if (!isNaN(val) && val > 0 && val <= articles.length) render(val - 1);
+            else alert("请输入有效的页码！");
+        }}
+
+        document.getElementById('jump-input').addEventListener('keypress', function(e) {{
+            if (e.key === 'Enter') jump();
+        }});
+
+        // 导出最终 CSV
+        function exportToCSV() {{
+            let headers = ["网站名称", "网站类型", "名称是否正确", "名称修正", "选择器是否正确", "备注"];
+            let csvContent = "\\uFEFF" + headers.join(",") + "\\n";
+
+            articles.forEach(item => {{
+                let row = [
+                    item.audit.site, item.audit.type, item.audit.name_ok,
+                    item.audit.name_fix, item.audit.selector, item.audit.remark
+                ];
+                let escapedRow = row.map(field => `"${{String(field || "").replace(/"/g, '""')}}"`);
+                csvContent += escapedRow.join(",") + "\\n";
+            }});
+
+            let blob = new Blob([csvContent], {{ type: 'text/csv;charset=utf-8;' }});
+            let link = document.createElement("a");
+            link.href = URL.createObjectURL(blob);
+            let dateStr = new Date().toISOString().slice(0,10).replace(/-/g,"");
+            link.download = "人工审核最终结果_" + dateStr + ".csv";
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }}
+
+        // 初始化加载第一篇
+        if(articles.length > 0) render(0);
+    </script>
+</body>
+</html>
+"""
+        with open(save_path, "w", encoding="utf-8") as f:
+            f.write(html_template)
+
+    def process_excel(self, path, keywords, min_words):
+        try:
+            self.log("读取 Excel 数据中，请稍候...")
+            df = pd.read_excel(path)
+            
+            if len(df.columns) < 15:
+                self.log("❌ [严重错误] Excel 列数不足！")
+                self.finish_inspection()
+                return
+
+            html_data_list = []
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+            for index, row in df.iterrows():
+                row_num = index + 2 
+                self.log(f"🔎 正在处理第 {row_num} 行数据...")
                 
-                map_channel = [("微信好友总量", None), ("线上平台", "线上平台"), ("线下平台", "线下活动"), ("考试现场", "考试现场"), ("高校", "高校"), ("其他", "其他")]
-                map_online = [("微信好友总量", None), ("网站", "网站"), ("小红书", "小红书"), ("公众号", "公众号"), ("抖音", "抖音"), ("视频号", "视频号"), ("其他", "其他")]
-                
-                is_do_retention = self.var_retention.get() and not retention_df.empty
-                
-                if self.var_prov_long.get():
-                    processor_obj.gen_prov_long_merged(clean_df, dedup_prov_df, os.path.join(base_directory, f"{base_filename}_01_省份一维.xlsx"))
-                    
-                if self.var_prov_wide.get():
-                    processor_obj.gen_prov_wide(clean_df, dedup_prov_df, os.path.join(base_directory, f"{base_filename}_02_省份宽表_渠道.xlsx"), map_channel, False)
-                    processor_obj.gen_prov_wide(clean_df, dedup_prov_df, os.path.join(base_directory, f"{base_filename}_03_省份宽表_线上.xlsx"), map_online, True)
-                    if is_do_retention:
-                        processor_obj.gen_wide_retention_all_levels(retention_df, os.path.join(base_directory, f"{base_filename}_02_省宽_渠道_留存.xlsx"), map_channel, False, True)
-                        processor_obj.gen_wide_retention_all_levels(retention_df, os.path.join(base_directory, f"{base_filename}_03_省宽_线上_留存.xlsx"), map_online, True, True)
+                val_A = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else "未知网站"
+                val_C = str(row.iloc[2]).strip() if pd.notna(row.iloc[2]) else ""
+                val_G = str(row.iloc[6]).strip() if pd.notna(row.iloc[6]) else ""
+                val_L = str(row.iloc[11]).strip() if pd.notna(row.iloc[11]) else ""
+                val_M = str(row.iloc[12]).strip() if pd.notna(row.iloc[12]) else ""
+                val_N = str(row.iloc[13]).strip() if pd.notna(row.iloc[13]) else ""
+                val_O = str(row.iloc[14]).strip() if pd.notna(row.iloc[14]) else ""
+
+                row_errors = []
+                l_title_extracted = ""
+                detail_url_extracted = ""
+                main_url = ""
+                main_title = ""
+
+                # 抓取首页Title
+                if val_C and val_C.startswith("http"):
+                    try:
+                        parsed_url = urlparse(val_C)
+                        main_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
                         
-                if self.var_city_long.get():
-                    processor_obj.gen_city_long_merged(clean_df, dedup_city_df, retention_df, os.path.join(base_directory, f"{base_filename}_04_地市一维.xlsx"), is_do_retention)
-                    
-                if self.var_city_wide.get():
-                    processor_obj.gen_city_wide(clean_df, dedup_city_df, os.path.join(base_directory, f"{base_filename}_05_地市宽表_渠道.xlsx"), map_channel, False)
-                    processor_obj.gen_city_wide(clean_df, dedup_city_df, os.path.join(base_directory, f"{base_filename}_06_地市宽表_线上.xlsx"), map_online, True)
-                    if is_do_retention:
-                        processor_obj.gen_wide_retention_all_levels(retention_df, os.path.join(base_directory, f"{base_filename}_05_地宽_渠道_留存.xlsx"), map_channel, False, False)
-                        processor_obj.gen_wide_retention_all_levels(retention_df, os.path.join(base_directory, f"{base_filename}_06_地宽_线上_留存.xlsx"), map_online, True, False)
-                        
-                if self.var_special.get():
-                    processor_obj.gen_special_city_report(clean_df, dedup_city_df, os.path.join(base_directory, f"{base_filename}_07_单独地市_渠道.xlsx"), map_channel, False)
-                    processor_obj.gen_special_city_report(clean_df, dedup_city_df, os.path.join(base_directory, f"{base_filename}_08_单独地市_线上.xlsx"), map_online, True)
-                    if is_do_retention:
-                        processor_obj.gen_wide_retention_all_levels(retention_df, os.path.join(base_directory, f"{base_filename}_07_单独_渠道_留存.xlsx"), map_channel, False, False, True)
-                        processor_obj.gen_wide_retention_all_levels(retention_df, os.path.join(base_directory, f"{base_filename}_08_单独_线上_留存.xlsx"), map_online, True, False, True)
-                        
-                if self.ent_date.get().strip():
-                    processor_obj.gen_date_summary_report_standalone(dedup_city_df, self.ent_date.get(), os.path.join(base_directory, f"{base_filename}_09_日期汇总.xlsx"), True)
-            else:
-                # 质检业务流
-                if retention_df.empty:
-                    self.log("❌ 严重错误：未发现任何状态为‘已添加’的留存数据，无法生成质检报表。")
+                        resp_main = requests.get(main_url, headers=headers, timeout=10, verify=False)
+                        resp_main.encoding = resp_main.apparent_encoding
+                        if resp_main.status_code == 200:
+                            soup_main = BeautifulSoup(resp_main.text, "html.parser")
+                            title_tag = soup_main.find("title")
+                            main_title = title_tag.string.strip() if title_tag and title_tag.string else "[无Title标签]"
+                        else:
+                            main_title = "[获取失败]"
+                    except Exception:
+                        main_title = "[获取失败]"
                 else:
-                    processor_obj.gen_quality_inspection_suite(clean_df, retention_df, os.path.join(base_directory, f"{base_filename}_10_质检汇总看板.xlsx"), self.ent_qc_rem.get(), self.ent_qc_ch.get(), self.ent_qc_date.get())
+                    main_title = "[C列URL不合法]"
+
+                # L列解析
+                if val_L:
+                    try:
+                        json_data = json.loads(val_L)
+                        l_title_extracted = json_data.get("title", "").strip()
+                        raw_detail_url = json_data.get("url", "").strip()
+                        if raw_detail_url and val_C and not raw_detail_url.startswith("http"):
+                            detail_url_extracted = urljoin(val_C, raw_detail_url)
+                        else:
+                            detail_url_extracted = raw_detail_url
+
+                        if val_M and val_M != l_title_extracted:
+                            row_errors.append(f"M列与L列标题不一致")
+                    except json.JSONDecodeError:
+                        row_errors.append("L列JSON格式无法解析")
+
+                # 空值校验
+                empty_cols = []
+                if not val_M: empty_cols.append("M列")
+                if not val_N: empty_cols.append("N列")
+                if not val_O: empty_cols.append("O列")
+                if empty_cols: row_errors.append(f"{','.join(empty_cols)}为空")
+
+                # 违禁词校验
+                if val_O:
+                    found_kws = [kw for kw in keywords if kw in val_O]
+                    if found_kws: row_errors.append(f"包含屏蔽词:[{','.join(found_kws)}]")
+
+                # 字数统计
+                if val_O:
+                    clean_text = re.sub(r'\s+', '', val_O)
+                    if len(clean_text) < min_words:
+                        row_errors.append(f"正文不足{min_words}字(当前{len(clean_text)}字)")
+
+                # 探测列表页
+                if not val_C or not val_C.startswith("http"):
+                    row_errors.append("C列URL为空或不合法")
+                elif not val_G:
+                    row_errors.append("G列选择器为空")
+                else:
+                    try:
+                        resp = requests.get(val_C, headers=headers, timeout=10, verify=False)
+                        resp.encoding = resp.apparent_encoding
+                        if resp.status_code != 200:
+                            row_errors.append(f"网页异常(HTTP {resp.status_code})")
+                        else:
+                            soup = BeautifulSoup(resp.text, "html.parser")
+                            try:
+                                elements = soup.select(val_G)
+                                if len(elements) == 0:
+                                    row_errors.append("未找到选择器")
+                            except Exception:
+                                row_errors.append("G列非合法选择器")
+                    except Exception:
+                        row_errors.append("网页连接失败/超时")
+
+                final_res = "正常" if len(row_errors) == 0 else " | ".join(row_errors)
+
+                # ================= 构建预设的审核字段逻辑 =================
+                is_special = "人才" in val_A or "聚合" in val_A
+                name_is_ok = "是" if val_A == main_title else "否"
+                name_fix_val = "" if val_A == main_title else main_title
+                selector_is_ok = "是" if final_res == "正常" else "否"
+                remark_val = "" if final_res == "正常" else final_res
+
+                html_data_list.append({
+                    "title": val_M,
+                    "content": val_O,
+                    "main_url": main_url if main_title != "[C列URL不合法]" else "",
+                    "list_url": val_C,
+                    "detail_url": detail_url_extracted,
+                    "flags": {
+                        "is_special": is_special,
+                        "has_error": final_res != "正常"
+                    },
+                    "audit": {
+                        "site": val_A,
+                        "type": "源站",
+                        "name_ok": name_is_ok,
+                        "name_fix": name_fix_val,
+                        "selector": selector_is_ok,
+                        "remark": remark_val
+                    }
+                })
+
+            # ================= 仅导出 HTML 工作站 =================
+            dir_name = os.path.dirname(path)
+            base_name = os.path.basename(path)
             
-            self.log(f"🎉 全部处理完成！总耗时: {time.time()-start_timestamp:.2f}秒")
-            messagebox.showinfo("成功", "任务已全部处理完毕。")
+            self.log("正在打包生成沉浸式审核工作站 (HTML)...")
+            html_new_name = base_name.replace(".xlsx", "_审核工作站.html")
+            html_save_path = os.path.join(dir_name, html_new_name)
+            self.generate_html_reader(html_save_path, html_data_list)
             
+            self.log("="*40)
+            self.log(f"🎉 全部任务圆满完成！")
+            
+            self.root.after(0, lambda: messagebox.showinfo("任务完成", 
+                f"智能审核工作站已生成！\n\n请直接双击打开：\n{html_new_name}\n\n在浏览器中进行人工排查和最终 CSV 导出。"))
+
         except Exception as e:
-            self.log(f"💥 运行异常: {str(e)}")
-            messagebox.showerror("运行异常", str(e))
+            self.log(f"❌ [代码异常] {str(e)}")
+            self.root.after(0, lambda: messagebox.showerror("程序异常", f"发生致命错误：\n{str(e)}"))
         finally:
-            self.btn_regular.config(state="normal")
-            self.btn_qc_analysis.config(state="normal")
+            self.finish_inspection()
+
+    def finish_inspection(self):
+        self.is_running = False
+        def reset_btn():
+            self.btn_start.configure(state="normal", text="▶ 开始生成审核工作站", fg_color="#2FA572")
+        self.root.after(0, reset_btn)
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = App(root)
+    root = ctk.CTk()
+    app = ExcelInspectorApp(root)
     root.mainloop()
