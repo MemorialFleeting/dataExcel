@@ -191,6 +191,10 @@ class UniversalProcessor:
                 return "地市"
             if str(row['分校']) in ["北京分校", "天津分校"] and "各校区" in dept_raw:
                 return "地市"
+            if str(row['分校']) in ["上海分校", "重庆分校", "海南分校"]:
+                special_cities = ["临港", "云阳", "忠县", "永川", "涪陵","东方"]
+                if any(city in dept_raw for city in special_cities):
+                    return "地市"
             return "其它"
             
         source_df['所属类别'] = source_df.apply(determine_category, axis=1)
@@ -1046,7 +1050,7 @@ class UniversalProcessor:
 class App:
     def __init__(self, root):
         self.root = root
-        self.root.title("数据自动化统计工具 6.2")
+        self.root.title("数据自动化统计工具 6.3")
         self.root.geometry("980x520")
         self.root.configure(bg="#f8f9fa")
 
@@ -1054,7 +1058,7 @@ class App:
         ui_style.theme_use('clam')
         ui_style.configure('TNotebook.Tab', font=("Microsoft YaHei", 10, "bold"), padding=[15, 5])
         
-        tk.Label(root, text="🚀 数据自动化统计工具 6.2 (添加日期选择功能)", font=("Microsoft YaHei", 15, "bold"), bg="#007bff", fg="white").pack(fill="x", pady=0, ipady=10)
+        tk.Label(root, text="🚀 数据自动化统计工具 6.3 (地市细节划分)", font=("Microsoft YaHei", 15, "bold"), bg="#007bff", fg="white").pack(fill="x", pady=0, ipady=10)
         
         main_container = tk.Frame(root, bg="#f8f9fa")
         main_container.pack(fill="both", expand=True, padx=15, pady=10)
