@@ -30,7 +30,7 @@ jobs:
       run: |
         # --windowed 参数对 Mac 很重要，不显示终端窗口
         # 将 "你的脚本名.py" 替换为你真实的文件名
-        pyinstaller --noconsole --onefile --windowed --name "DataTool" dataExcel.py
+        pyinstaller --noconsole --onefile --windowed --name "数据自动化统计工具 6.3" dataExcel.py
 
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
